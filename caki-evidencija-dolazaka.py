@@ -120,26 +120,47 @@ else:
 
     st.divider()
 
-    # --- Dodaj gosta iz druge grupe ---
+    # --- Dodaj gosta iz druge grupe (staging - upisuje se tek na Spremi) ---
+    kljuc_gostiju = f"gosti_{grupa_id}_{odabrani_datum}"
+    if kljuc_gostiju not in st.session_state:
+        st.session_state[kljuc_gostiju] = {}  # {ucenik_id: {"ime": ..., "status": "1", "maticna": ...}}
+
     with st.expander("➕ Dodaj gosta (učenik iz druge grupe)"):
         upit = st.text_input("Pretraži po imenu")
         if upit:
             vec_na_rosteru = set(roster["ucenik_id"].tolist())
+            vec_dodan_gost = set(st.session_state[kljuc_gostiju].keys())
             rezultati = df_ucenici[
                 df_ucenici["ime_djeteta"].str.contains(upit, case=False, na=False)
-                & ~df_ucenici["ucenik_id"].isin(vec_na_rosteru)
+                & ~df_ucenici["ucenik_id"].isin(vec_na_rosteru | vec_dodan_gost)
             ]
             for _, u in rezultati.head(10).iterrows():
                 if st.button(f"Dodaj: {u['ime_djeteta']} ({u['ucenik_id']})", key=f"gost_{u['ucenik_id']}"):
-                    # Pronađi matičnu grupu (najbolja pretpostavka - njegova aktivna rezervacija)
                     njegova = df_rezervacije[
                         (df_rezervacije["ucenik_id"] == u["ucenik_id"]) & (df_rezervacije["status"] == "Potvrđeno")
                     ]
                     maticna = njegova.iloc[0]["grupa_id"] if not njegova.empty else "Nepoznato"
-                    dodaj_gostovanje(
-                        sheet, str(odabrani_datum), u["ucenik_id"], u["ime_djeteta"], maticna, grupa_id
-                    )
-                    st.success(f"{u['ime_djeteta']} dodan kao gost za danas.")
+                    st.session_state[kljuc_gostiju][u["ucenik_id"]] = {
+                        "ime": u["ime_djeteta"], "status": "1", "maticna": maticna
+                    }
+                    st.rerun()
+
+    if st.session_state[kljuc_gostiju]:
+        st.markdown("### Gosti danas")
+        for uid, podaci in list(st.session_state[kljuc_gostiju].items()):
+            gc1, gc2, gc3 = st.columns([2, 2, 1])
+            gc1.write(f"{podaci['ime']} 🔄")
+            podaci["status"] = gc2.radio(
+                "status_gost", options=["1", "2"],
+                format_func=lambda v: {"1": "✅ Prisutan", "2": "💻 Online"}[v],
+                key=f"radio_gost_{uid}_{odabrani_datum}", horizontal=True, label_visibility="collapsed",
+                index=["1", "2"].index(podaci["status"]),
+            )
+            if gc3.button("🗑️ Očisti", key=f"clear_gost_{uid}_{odabrani_datum}"):
+                del st.session_state[kljuc_gostiju][uid]
+                st.rerun()
+
+    st.divider()
 
     if st.button("💾 Spremi dolazak", type="primary"):
         termin_id = pronadji_ili_kreiraj_termin(sheet, grupa_id, str(odabrani_datum), danas_predaje, redovni)
@@ -147,5 +168,16 @@ else:
             uid = r["ucenik_id"]
             kljuc = f"status_{grupa_id}_{uid}_{odabrani_datum}"
             spremi_dolazak(sheet, termin_id, grupa_id, uid, r["ime_djeteta"], st.session_state.get(kljuc, "1"))
-        st.success("Dolazak spremljen!")
+
+        for uid, podaci in st.session_state[kljuc_gostiju].items():
+            dodaj_gostovanje(
+                sheet, str(odabrani_datum), uid, podaci["ime"], podaci["maticna"], grupa_id
+            )
+            spremi_dolazak(sheet, termin_id, grupa_id, uid, podaci["ime"], podaci["status"])
+
+        st.session_state["zadnje_spremljeno"] = True
         st.cache_data.clear()
+        st.rerun()
+
+    if st.session_state.get("zadnje_spremljeno"):
+        st.success("Dolazak spremljen! Popis ostaje otvoren — možete nastaviti dodavati zakašnjele učenike.")
