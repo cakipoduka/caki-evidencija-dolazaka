@@ -13,14 +13,12 @@ import streamlit as st
 from pipeline_upisi import (
     DANI_U_TJEDNU,
     NASTAVNICI,
-    dodaj_gostovanje,
     get_gspread_client,
     load_grupe,
     load_rezervacije,
     load_ucenici,
-    pronadji_ili_kreiraj_termin,
     roster_grupe,
-    spremi_dolazak,
+    spremi_cijeli_termin,
 )
 
 st.set_page_config(page_title="CAKI — Dolasci", page_icon="✅", layout="centered")
@@ -163,17 +161,21 @@ else:
     st.divider()
 
     if st.button("💾 Spremi dolazak", type="primary"):
-        termin_id = pronadji_ili_kreiraj_termin(sheet, grupa_id, str(odabrani_datum), danas_predaje, redovni)
+        roster_zapisi = []
         for _, r in roster.iterrows():
             uid = r["ucenik_id"]
             kljuc = f"status_{grupa_id}_{uid}_{odabrani_datum}"
-            spremi_dolazak(sheet, termin_id, grupa_id, uid, r["ime_djeteta"], st.session_state.get(kljuc, "1"))
+            roster_zapisi.append({
+                "ucenik_id": uid, "ime_djeteta": r["ime_djeteta"],
+                "status": st.session_state.get(kljuc, "1"),
+            })
 
-        for uid, podaci in st.session_state[kljuc_gostiju].items():
-            dodaj_gostovanje(
-                sheet, str(odabrani_datum), uid, podaci["ime"], podaci["maticna"], grupa_id
-            )
-            spremi_dolazak(sheet, termin_id, grupa_id, uid, podaci["ime"], podaci["status"])
+        gosti_zapisi = [
+            {"ucenik_id": uid, "ime_djeteta": p["ime"], "status": p["status"], "maticna_grupa": p["maticna"]}
+            for uid, p in st.session_state[kljuc_gostiju].items()
+        ]
+
+        spremi_cijeli_termin(sheet, grupa_id, str(odabrani_datum), danas_predaje, redovni, roster_zapisi, gosti_zapisi)
 
         st.session_state["zadnje_spremljeno"] = True
         st.cache_data.clear()
