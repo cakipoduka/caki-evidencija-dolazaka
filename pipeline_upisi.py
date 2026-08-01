@@ -377,6 +377,14 @@ def spremi_dolazak(sheet, termin_id: str, grupa_id: str, ucenik_id: str, ime_dje
 
 def dodaj_gostovanje(sheet, datum: str, ucenik_id: str, ime_djeteta: str, maticna_grupa: str, grupa_gostovanja: str):
     ws = sheet.worksheet("Gostovanja")
+    postojeci = ws.get_all_records()
+    for red in postojeci:
+        if (
+            str(red.get("datum")) == str(datum)
+            and str(red.get("ucenik_id")) == str(ucenik_id)
+            and str(red.get("grupa_gostovanja")) == str(grupa_gostovanja)
+        ):
+            return  # već zabilježeno ovaj dan za ovu grupu, ne dupliciraj
     gostovanje_id = "".join(random.choices(string.ascii_lowercase + string.digits, k=10))
     ws.append_row([gostovanje_id, str(datum), str(ucenik_id), str(ime_djeteta), str(maticna_grupa), str(grupa_gostovanja), SEZONA])
 
@@ -388,3 +396,32 @@ def roster_grupe(df_rezervacije: pd.DataFrame, grupa_id: str) -> pd.DataFrame:
     return df_rezervacije[
         (df_rezervacije["grupa_id"] == grupa_id) & (df_rezervacije["status"] == "Potvrđeno")
     ]
+
+
+def izgradi_grid_dolazaka(df_dolasci: pd.DataFrame, df_termini: pd.DataFrame, grupa_id: str):
+    """Vraća (grid_df, nastavnici_po_datumu) za pregled - redovi=učenici, stupci=datumi."""
+    if df_dolasci.empty or df_termini.empty:
+        return pd.DataFrame(), {}
+
+    termini_grupe = df_termini[df_termini["grupa_id"] == grupa_id]
+    if termini_grupe.empty:
+        return pd.DataFrame(), {}
+
+    termin_id_u_datum = dict(zip(termini_grupe["termin_id"], termini_grupe["datum"]))
+    nastavnici_po_datumu = dict(zip(termini_grupe["datum"], termini_grupe["nastavnik_odrzao"]))
+
+    dolasci_grupe = df_dolasci[df_dolasci["termin_id"].isin(termini_grupe["termin_id"])].copy()
+    if dolasci_grupe.empty:
+        return pd.DataFrame(), nastavnici_po_datumu
+
+    dolasci_grupe["datum"] = dolasci_grupe["termin_id"].map(termin_id_u_datum)
+
+    ikone = {"1": "✅", "0": "❌", "2": "💻"}
+    dolasci_grupe["prikaz"] = dolasci_grupe["status"].astype(str).map(ikone).fillna("")
+
+    grid = dolasci_grupe.pivot_table(
+        index="ime_djeteta", columns="datum", values="prikaz", aggfunc="first", fill_value=""
+    )
+    # Sortiraj stupce kronološki
+    grid = grid[sorted(grid.columns)]
+    return grid, nastavnici_po_datumu
