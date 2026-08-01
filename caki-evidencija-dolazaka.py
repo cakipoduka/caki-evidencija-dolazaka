@@ -124,7 +124,11 @@ else:
     with st.expander("➕ Dodaj gosta (učenik iz druge grupe)"):
         upit = st.text_input("Pretraži po imenu")
         if upit:
-            rezultati = df_ucenici[df_ucenici["ime_djeteta"].str.contains(upit, case=False, na=False)]
+            vec_na_rosteru = set(roster["ucenik_id"].tolist())
+            rezultati = df_ucenici[
+                df_ucenici["ime_djeteta"].str.contains(upit, case=False, na=False)
+                & ~df_ucenici["ucenik_id"].isin(vec_na_rosteru)
+            ]
             for _, u in rezultati.head(10).iterrows():
                 if st.button(f"Dodaj: {u['ime_djeteta']} ({u['ucenik_id']})", key=f"gost_{u['ucenik_id']}"):
                     # Pronađi matičnu grupu (najbolja pretpostavka - njegova aktivna rezervacija)
