@@ -727,6 +727,66 @@ def pretrazi_ucenike(df_ucenici: pd.DataFrame, upit: str) -> pd.DataFrame:
 
 
 # ============================================================
+# NASTAVNICI — upravljanje imenima/šiframa kroz Sheet, ne kroz kod.
+# NASTAVNICI konstanta (na vrhu fajla) ostaje SAMO kao početni seed pri
+# prvom kreiranju taba i kao fallback ako tab još ne postoji — nakon
+# postavljanja, sve stranice čitaju popis odavde, ne iz konstante.
+# ============================================================
+
+def postavi_tab_nastavnici(sheet):
+    """Kreira 'Nastavnici' tab ako ne postoji, seed-an trenutnom NASTAVNICI
+    konstantom sa privremenom lozinkom (svatko je treba promijeniti pri prvom
+    korištenju). Pokreni jednom ručno."""
+    postojeci = [ws.title for ws in sheet.worksheets()]
+    if "Nastavnici" not in postojeci:
+        ws = sheet.add_worksheet(title="Nastavnici", rows=50, cols=3)
+        ws.append_row(["ime", "lozinka", "aktivan"])
+        for ime in NASTAVNICI:
+            ws.append_row([ime, "promijeni123", "Da"])
+
+
+def load_nastavnici(sheet) -> pd.DataFrame:
+    return _load_worksheet_df(sheet.worksheet("Nastavnici"))
+
+
+def nastavnici_aktivni(df_nastavnici: pd.DataFrame) -> list:
+    """Popis imena AKTIVNIH nastavnika za padajuće izbornike — zamjena za staru
+    hardkodiranu NASTAVNICI konstantu. Fallback na konstantu ako tab još nije
+    kreiran (prije prvog klika na setup gumb), da ništa ne pukne u međuvremenu."""
+    if df_nastavnici.empty:
+        return NASTAVNICI
+    aktivni = df_nastavnici[df_nastavnici["aktivan"].astype(str).str.lower() == "da"]
+    return aktivni["ime"].tolist() or NASTAVNICI
+
+
+def provjeri_lozinku_instruktora(df_nastavnici: pd.DataFrame, ime: str, lozinka: str) -> bool:
+    """True samo ako ime+lozinka odgovaraju i nastavnik je trenutno aktivan —
+    deaktiviran (bivši) nastavnik se više ne može prijaviti čak i sa starom lozinkom."""
+    red = df_nastavnici[
+        (df_nastavnici["ime"] == ime)
+        & (df_nastavnici["lozinka"] == lozinka)
+        & (df_nastavnici["aktivan"].astype(str).str.lower() == "da")
+    ]
+    return not red.empty
+
+
+def dodaj_nastavnika(sheet, ime: str, lozinka: str):
+    ws = sheet.worksheet("Nastavnici")
+    ws.append_row([str(ime), str(lozinka), "Da"])
+
+
+def azuriraj_nastavnika(sheet, row_number: int, polja: dict):
+    """polja = {"lozinka": "...", "aktivan": "Ne", ...} — isti generički obrazac
+    kao azuriraj_ucenika/azuriraj_instrukciju."""
+    ws = sheet.worksheet("Nastavnici")
+    headers = ws.row_values(1)
+    for naziv, vrijednost in polja.items():
+        if naziv in headers:
+            col = headers.index(naziv) + 1
+            ws.update_cell(row_number, col, vrijednost)
+
+
+# ============================================================
 # PDF IZVOZ — reusable helper (koristi ga "Uredi učenika" izvoz,
 # može ga koristiti i bilo koji budući izvoz popisa)
 # ============================================================
