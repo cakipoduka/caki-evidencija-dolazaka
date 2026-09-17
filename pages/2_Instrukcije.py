@@ -1,23 +1,16 @@
 """
 CAKI — pages/2_Instrukcije.py
 Stranica za instruktore: evidencija odrađenih instrukcija (individualnih/grupnih).
-Zasebna, OSOBNA lozinka po instruktoru (ne dijeljena kao ulazna lozinka appa) —
-login odmah određuje identitet, instruktor NE bira svoje ime iz padajućeg popisa
-(za razliku od caki-evidencija-dolazaka.py) i vidi/uređuje ISKLJUČIVO svoje retke.
+Prijava provjerava ime+lozinku protiv 'Nastavnici' taba u Sheetu (uređuje ga admin
+na stranici "👤 Nastavnici" u app_upisi_admin.py — dodavanje/uklanjanje/promjena
+lozinke se radi TAMO, ne ovdje i ne u kodu). Login odmah određuje identitet —
+instruktor NE bira svoje ime sa liste bez provjere (za razliku od
+caki-evidencija-dolazaka.py) i vidi/uređuje ISKLJUČIVO svoje retke.
 
-Postavi u repo 'caki-evidencija-dolazaka', mapa pages/, kao 2_Instrukcije.py
-(brojčani prefiks određuje redoslijed u sidebaru — vidi CAKI_MASTER_BAZA §22).
+Postavi u repo 'caki-evidencija-dolazaka', mapa pages/, kao 2_Instrukcije.py.
 
-Sekret koji treba dodati (Streamlit Cloud → Settings → Secrets), NOVI odjeljak:
-
-[INSTRUKCIJE_LOZINKE]
-Slađana = "..."
-Mirela = "..."
-Ivica = "..."
-Martina = "..."
-Neira = "..."
-
-(Caki/admin ne treba ovdje — admin uređuje sve preko app_upisi_admin.py.)
+VIŠE NIJE POTREBAN nikakav poseban unos u Streamlit Secrets za ovu stranicu —
+šifre sad žive u Sheetu (tab 'Nastavnici'), koje admin uređuje izravno.
 """
 import json
 from datetime import date
@@ -30,30 +23,58 @@ from pipeline_upisi import (
     dodaj_instrukciju_termin,
     get_gspread_client,
     load_instrukcije,
+    load_nastavnici,
     load_ucenici,
+    nastavnici_aktivni,
     pretrazi_ucenike,
+    provjeri_lozinku_instruktora,
 )
 
 st.set_page_config(page_title="CAKI — Instrukcije", page_icon="📝", layout="centered")
 
 
+@st.cache_resource
+def init_sheet():
+    sa_info = json.loads(st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"])
+    gc = get_gspread_client(sa_info)
+    return gc.open_by_key(st.secrets["SHEET_ID"])
+
+
+sheet = init_sheet()
+
+
+@st.cache_data(ttl=30)
+def dohvati_nastavnike():
+    try:
+        return load_nastavnici(sheet)
+    except Exception:
+        return None
+
+
+df_nastavnici = dohvati_nastavnike()
+
+
 def provjeri_instruktora() -> str | None:
-    """Vraća ime prijavljenog instruktora ili None. Za razliku od dijeljene
-    lozinke appa, ovdje svatko ima SVOJU — login = identitet, ne self-report."""
+    """Vraća ime prijavljenog instruktora ili None. Provjera ide protiv
+    'Nastavnici' taba u Sheetu — login = identitet, ne self-report."""
     if st.session_state.get("instruktor_prijavljen"):
         return st.session_state["instruktor_prijavljen"]
 
     st.title("📝 CAKI — Evidencija instrukcija")
-    ime_pokusaj = st.text_input("Ime (kako je zapisano u sustavu)", key="instr_ime_unos")
+
+    if df_nastavnici is None or df_nastavnici.empty:
+        st.error("Tab 'Nastavnici' još nije postavljen u Sheetu — javi adminu.")
+        st.stop()
+
+    ime_pokusaj = st.selectbox("Tko ste vi?", options=nastavnici_aktivni(df_nastavnici))
     lozinka_pokusaj = st.text_input("Vaša lozinka", type="password", key="instr_loz_unos")
 
     if st.button("Prijava"):
-        lozinke = st.secrets.get("INSTRUKCIJE_LOZINKE", {})
-        if ime_pokusaj in lozinke and lozinka_pokusaj == lozinke[ime_pokusaj]:
+        if provjeri_lozinku_instruktora(df_nastavnici, ime_pokusaj, lozinka_pokusaj):
             st.session_state["instruktor_prijavljen"] = ime_pokusaj
             st.rerun()
         else:
-            st.error("Pogrešno ime ili lozinka.")
+            st.error("Pogrešna lozinka.")
     return None
 
 
@@ -67,16 +88,6 @@ st.caption(f"Prijavljeni ste kao: **{nastavnik}**")
 if st.sidebar.button("🚪 Odjava"):
     del st.session_state["instruktor_prijavljen"]
     st.rerun()
-
-
-@st.cache_resource
-def init_sheet():
-    sa_info = json.loads(st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"])
-    gc = get_gspread_client(sa_info)
-    return gc.open_by_key(st.secrets["SHEET_ID"])
-
-
-sheet = init_sheet()
 
 
 @st.cache_data(ttl=15)
