@@ -19,7 +19,9 @@ import streamlit as st
 
 from pipeline_upisi import (
     INSTRUKCIJE_OBLICI,
+    INSTRUKCIJE_PREDMETI,
     INSTRUKCIJE_TRAJANJA,
+    STUPNJEVI_SKOLOVANJA_INSTR,
     dodaj_instrukciju_termin,
     get_gspread_client,
     load_instrukcije,
@@ -117,10 +119,12 @@ elif upit:
     with st.form("novi_termin_form"):
         datum = st.date_input("Datum", value=date.today())
         duljina = st.selectbox("Duljina termina (min)", options=INSTRUKCIJE_TRAJANJA, index=1)
+        predmet = st.selectbox("Predmet", options=INSTRUKCIJE_PREDMETI)
+        stupanj = st.selectbox("Stupanj školovanja", options=STUPNJEVI_SKOLOVANJA_INSTR, index=1)
         oblik = st.radio("Oblik", options=INSTRUKCIJE_OBLICI, horizontal=True)
-        broj_u_grupi = None
-        if oblik == "Grupa":
-            broj_u_grupi = st.number_input("Broj učenika u grupi", min_value=2, max_value=10, value=2)
+        # Unutar st.form polja se ne pojavljuju/skrivaju dok se forma ne pošalje, pa je
+        # broj učenika uvijek vidljiv (koristi se samo ako je odabrano "Grupa").
+        broj_u_grupi = st.number_input("Broj učenika u grupi (samo za grupu)", min_value=1, max_value=10, value=1)
         placeno = st.checkbox("Plaćeno (moja napomena — nije službena potvrda)")
         napomena_int = st.text_area("Napomena (interna — vidite samo vi i admin)")
         napomena_jav = st.text_area("Napomena (javna — vidljivo i roditelju)")
@@ -135,10 +139,14 @@ elif upit:
                 datum=str(datum),
                 duljina_min=duljina,
                 oblik=oblik,
-                broj_ucenika_u_grupi=broj_u_grupi,
+                broj_ucenika_u_grupi=broj_u_grupi if oblik == "Grupa" else None,
                 placeno_oznaka_prof="Da" if placeno else "Ne",
                 napomena_interna=napomena_int,
                 napomena_javna=napomena_jav,
+                predmet=predmet,
+                stupanj_skolovanja=stupanj,
+                # sifra i cijena se računaju automatski iz Cjenika; nacin_naplate određuje
+                # admin (financijska odluka) — novi termin nasljeđuje zadnju vrijednost.
             )
             st.success("Termin spremljen.")
             st.cache_data.clear()
@@ -157,12 +165,13 @@ else:
     if moji.empty:
         st.info("Nemate još evidentiranih termina.")
     else:
-        prikaz = moji[[
-            "datum", "ime_djeteta", "duljina_min", "oblik",
+        stupci = ["datum", "ime_djeteta"] + (["predmet"] if "predmet" in moji.columns else []) + [
+            "duljina_min", "oblik",
             "placeno_oznaka_prof", "uplata_potvrdjena_admin", "napomena_interna",
-        ]].rename(columns={
+        ]
+        prikaz = moji[stupci].rename(columns={
             "duljina_min": "trajanje (min)",
             "placeno_oznaka_prof": "plaćeno (moja oznaka)",
             "uplata_potvrdjena_admin": "uplata potvrđena (admin)",
         })
-        st.dataframe(prikaz, use_container_width=True, hide_index=True)
+        st.dataframe(prikaz, width="stretch", hide_index=True)
