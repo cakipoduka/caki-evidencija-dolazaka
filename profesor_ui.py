@@ -1,7 +1,12 @@
 """
 CAKI — profesor_ui.py  (26.9.2026.)
 Portal za profesore / instruktore: JEDNA prijava (ime + osobna lozinka iz taba Nastavnici),
-u karticama: ✅ Dolasci (grupni termini) · 📝 Instrukcije · 📄 Mjesečni izvještaj.
+u karticama: ✅ Dolasci (grupni termini) · 🎓 Matura · 📝 Instrukcije · 📄 Mjesečni izvještaj.
+
+🎓 Matura (26.9.2026.): profesor bilježi dolaske za svoju kantu (dan × termin × učionica) iz
+rasporeda koji admin složi u 🎓 Raspored Matura. Vidi samo kante svojih predmeta
+(Nastavnici.predmeti). Datum slobodan, najviše ROK_PROFESOR_DANA (14) dana unatrag.
+"Držim sat umjesto kolege" = zamjena (bilježi se u Zamjene log).
 
 Koriste ga caki-evidencija-dolazaka.py (glavna adresa) i pages/2_Instrukcije.py (stari link).
 
@@ -10,7 +15,7 @@ termin plaćen (✅). Naplatu gotovinom smije evidentirati samo profesor s ovla�
 (Nastavnici.naplata_gotovinom = Da, postavlja admin).
 """
 import json
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 import streamlit as st
@@ -21,6 +26,16 @@ from pipeline_upisi import (
     INSTRUKCIJE_PREDMETI,
     INSTRUKCIJE_TRAJANJA,
     MJESECI_HR,
+    ROK_PROFESOR_DANA,
+    SEZONA,
+    datum_u_roku,
+    kante_za_profesora,
+    labela_kante,
+    matura_kante,
+    naziv_taba_rasporeda_mature,
+    postojeci_dolasci,
+    predmeti_nastavnika,
+    zadnji_datum_dana,
     PLACENO_GOTOVINOM,
     STATUSI_ZA_OBRACUN,
     STUPNJEVI_SKOLOVANJA_INSTR,
@@ -151,6 +166,100 @@ def _kartica_dolasci(sheet, nastavnik):
         st.rerun()
 
 
+# ------------------------------------------------------------------ 🎓 matura
+
+def _kartica_matura(sheet, nastavnik):
+    df_ras = _ucitaj(naziv_taba_rasporeda_mature(SEZONA))
+    kante = matura_kante(df_ras)
+    if not kante:
+        st.info("Raspored Mature još nije složen/spremljen — javite adminu.")
+        return
+    moje, ostale = kante_za_profesora(kante, nastavnik, predmeti_nastavnika(_ucitaj("Nastavnici"), nastavnik))
+    nacin = st.radio("Sat", ["moje", "zamjena"], horizontal=True, key="mat_nacin",
+                     format_func={"moje": f"⭐ Moje grupe ({len(moje)})",
+                                  "zamjena": f"🔄 Držim sat umjesto kolege ({len(ostale)})"}.get)
+    izbor = moje if nacin == "moje" else ostale
+    if not izbor:
+        st.info("Nemate upisanih grupa u rasporedu Mature — javite adminu." if nacin == "moje"
+                else "Nema drugih grupa vaših predmeta.")
+        return
+    opcije = {labela_kante(k, s_profesorom=(nacin == "zamjena")): k for k in izbor}
+    kanta = opcije[st.selectbox("Grupa (kanta iz rasporeda)", list(opcije), key=f"mat_kanta_{nacin}")]
+    gid = kanta["grupa_id"]
+
+    danas = sada_zagreb().date()
+    datum = st.date_input("Datum sata", value=zadnji_datum_dana(kanta["dan"], danas), format="DD.MM.YYYY",
+                          min_value=danas - timedelta(days=ROK_PROFESOR_DANA), max_value=danas,
+                          key=f"mat_datum_{gid}",
+                          help=f"Najviše {ROK_PROFESOR_DANA} dana unatrag. Stariji sat upisuje admin.")
+    if not datum_u_roku(datum, danas):
+        st.error(f"Sat se može upisati najviše {ROK_PROFESOR_DANA} dana unatrag — za stariji se javite adminu.")
+        return
+    dan_datuma = DANI_U_TJEDNU[datum.weekday()]
+    if dan_datuma != kanta["dan"]:
+        st.warning(f"Odabrani datum je {dan_datuma.lower()}, a grupa je u rasporedu {kanta['dan'].lower()} — "
+                   "u redu ako je sat premješten.")
+    redovni = kanta["profesor"] or nastavnik
+    if kanta["profesor"] and kanta["profesor"] != nastavnik:
+        st.warning(f"🔄 Zamjena — u rasporedu je {kanta['profesor']}. Bilježi se automatski.")
+
+    if not kanta["ucenici"]:
+        st.info("U ovoj grupi još nema učenika.")
+        return
+    prije = postojeci_dolasci(_ucitaj("Termini"), _ucitaj("Dolasci"), gid, str(datum))
+    if prije:
+        st.info("Ovaj sat je već zabilježen — ispod su spremljeni statusi, možete ih ispraviti.")
+    st.markdown(f"#### Popis učenika ({len(kanta['ucenici'])})")
+    oznake = {"1": "✅ Prisutan", "0": "❌ Odsutan", "2": "💻 Online"}
+    statusi = {}
+    for u in kanta["ucenici"]:
+        zadano = prije.get(u["ucenik_id"], "2" if u["online"] else "1")
+        c1, c2 = st.columns([2, 3])
+        c1.write(f"{u['ime_djeteta']} · {u['predmet']}" + (" 💻" if u["online"] else ""))
+        statusi[u["ucenik_id"]] = c2.radio("status", ["1", "0", "2"], index=["1", "0", "2"].index(zadano)
+                                           if zadano in ("1", "0", "2") else 0,
+                                           format_func=oznake.get, horizontal=True,
+                                           key=f"mat_dol_{gid}_{u['ucenik_id']}_{datum}", label_visibility="collapsed")
+
+    # Gost: Matura učenik iz druge kante (nadoknada)
+    kljuc_g = f"mat_gosti_{gid}_{datum}"
+    gosti = st.session_state.setdefault(kljuc_g, {})
+    u_kanti = {u["ucenik_id"] for u in kanta["ucenici"]}
+    with st.expander("➕ Dodaj gosta (učenik iz druge grupe nadoknađuje sat)"):
+        upit = st.text_input("Pretraži po imenu", key=f"mat_gost_upit_{gid}")
+        if upit:
+            nadjeni = {}
+            for k in kante:
+                for u in k["ucenici"]:
+                    if (upit.lower() in u["ime_djeteta"].lower() and u["ucenik_id"] not in u_kanti
+                            and u["ucenik_id"] not in gosti and u["ucenik_id"] not in nadjeni):
+                        nadjeni[u["ucenik_id"]] = (u["ime_djeteta"], k["grupa_id"])
+            for uid, (ime, maticna) in list(nadjeni.items())[:10]:
+                if st.button(f"Dodaj: {ime} ({uid})", key=f"mat_gost_{gid}_{uid}"):
+                    gosti[uid] = {"ime": ime, "status": "1", "maticna": maticna}
+                    st.rerun()
+    for uid, podaci in list(gosti.items()):
+        g1, g2, g3 = st.columns([2, 2, 1])
+        g1.write(f"{podaci['ime']} 🔄")
+        podaci["status"] = g2.radio("gost", ["1", "2"], format_func=oznake.get, horizontal=True,
+                                    key=f"mat_gost_st_{uid}_{datum}", label_visibility="collapsed")
+        if g3.button("🗑️", key=f"mat_gost_del_{uid}_{datum}"):
+            del gosti[uid]
+            st.rerun()
+
+    if st.button("💾 Spremi dolazak", type="primary", key=f"mat_spremi_{gid}"):
+        spremi_cijeli_termin(
+            sheet, gid, str(datum), nastavnik, redovni,
+            [{"ucenik_id": u["ucenik_id"], "ime_djeteta": u["ime_djeteta"], "status": statusi[u["ucenik_id"]]}
+             for u in kanta["ucenici"]],
+            [{"ucenik_id": uid, "ime_djeteta": p["ime"], "status": p["status"], "maticna_grupa": p["maticna"]}
+             for uid, p in gosti.items()])
+        st.session_state.pop(kljuc_g, None)
+        _poruka("success", f"Dolazak spremljen: {labela_kante(kanta)}, {datum.strftime('%d.%m.%Y.')}.")
+        st.cache_data.clear()
+        st.rerun()
+
+
 # ------------------------------------------------------------------ 📝 instrukcije
 
 def _kartica_instrukcije(sheet, nastavnik, smije_gotovinu):
@@ -277,9 +386,12 @@ def prikazi_portal_profesora():
         vrsta, tekst = st.session_state.pop("_prof_poruka")
         getattr(st, vrsta)(tekst)
     smije_gotovinu = smije_naplatu_gotovinom(_ucitaj("Nastavnici"), nastavnik)
-    k_dol, k_instr, k_izv = st.tabs(["✅ Dolasci — grupe", "📝 Instrukcije", "📄 Mjesečni izvještaj"])
+    k_dol, k_mat, k_instr, k_izv = st.tabs(["✅ Dolasci — grupe", "🎓 Matura", "📝 Instrukcije",
+                                            "📄 Mjesečni izvještaj"])
     with k_dol:
         _kartica_dolasci(sheet, nastavnik)
+    with k_mat:
+        _kartica_matura(sheet, nastavnik)
     with k_instr:
         _kartica_instrukcije(sheet, nastavnik, smije_gotovinu)
     with k_izv:
