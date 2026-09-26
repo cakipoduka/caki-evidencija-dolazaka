@@ -1,0 +1,3 @@
+[client]
+# Jedan portal za profesore (profesor_ui.py) — bez izbornika stranica u sidebaru
+showSidebarNavigation = false
