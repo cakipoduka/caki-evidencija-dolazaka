@@ -31,7 +31,6 @@ from pipeline_upisi import (
     load_izvjestaji,
     nastavnici_aktivni,
     oznaci_naplatu_gotovinom,
-    pdf_izvjestaja_instruktora,
     posalji_izvjestaj_instruktora,
     pretrazi_ucenike,
     provjeri_lozinku_instruktora,
@@ -254,10 +253,7 @@ def _kartica_izvjestaj(sheet, nastavnik):
             tekst += f" — napomena admina: *{r['napomena_admin']}*"
         (st.warning if r["status"] == "Vraćeno na ispravak" else st.info)(tekst)
 
-    b1, b2 = st.columns(2)
-    b1.download_button("⬇️ Preuzmi PDF", data=pdf_izvjestaja_instruktora(izv),
-                       file_name=f"CAKI_izvjestaj_{nastavnik.split()[0]}_{izv['mjesec']}.pdf", mime="application/pdf")
-    if b2.button("📤 Pošalji adminu na provjeru", type="primary"):
+    if st.button("📤 Pošalji adminu na provjeru", type="primary"):
         try:
             posalji_izvjestaj_instruktora(sheet, izv)
             _poruka("success", "Izvještaj je poslan — admin ga vidi u panelu za provjeru.")
