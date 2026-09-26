@@ -62,7 +62,7 @@ def _init_sheet():
     return get_gspread_client(sa_info).open_by_key(st.secrets["SHEET_ID"])
 
 
-@st.cache_data(ttl=20)
+@st.cache_data(ttl=60)
 def _ucitaj(naziv: str) -> pd.DataFrame:
     return _load_opcionalno(_init_sheet(), naziv)
 
