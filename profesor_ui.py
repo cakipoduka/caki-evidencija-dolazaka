@@ -30,8 +30,9 @@ from pipeline_upisi import (
     blokovi_zauzetosti,
     html_tjedne_mreze,
     ponedjeljak_tjedna,
+    razdoblje_grupe_upisa,
+    ucitaj_praznike,
     ucitaj_razdoblja,
-    u_datum,
     INSTRUKCIJE_OBLICI,
     INSTRUKCIJE_PREDMETI,
     INSTRUKCIJE_TRAJANJA,
@@ -112,10 +113,14 @@ def _kartica_dolasci(sheet, nastavnik):
         st.info("Grupe još nisu postavljene.")
         return
     grupe_danas = df_grupe[(df_grupe["dan"] == dan_naziv) & (df_grupe["aktivna"].astype(str).str.lower() == "da")]
-    # samo grupe koje taj datum traju (Grupe.datum_od / datum_do; prazno = cijela sezona)
-    grupe_danas = grupe_danas[[blok_aktivan_na_datum({"datum_od": u_datum(g.get("datum_od")),
-                                                       "datum_do": u_datum(g.get("datum_do"))}, odabrani_datum)
-                               for _, g in grupe_danas.iterrows()]] if not grupe_danas.empty else grupe_danas
+    # samo grupe koje taj datum traju (Razdoblja_termina: prvi termin + broj termina; prazno = cijela sezona)
+    if not grupe_danas.empty:
+        razdoblja, praznici = _razdoblja_i_praznici()
+        traju = []
+        for _, g in grupe_danas.iterrows():
+            od, do, _broj = razdoblje_grupe_upisa(g, razdoblja, praznici)
+            traju.append(blok_aktivan_na_datum({"datum_od": od, "datum_do": do}, odabrani_datum))
+        grupe_danas = grupe_danas[traju]
     if grupe_danas.empty:
         st.info(f"Nema aktivnih termina za {dan_naziv.lower()}.")
         return
@@ -399,6 +404,12 @@ def _kartica_izvjestaj(sheet, nastavnik):
 
 # ------------------------------------------------------------------ portal
 
+@st.cache_data(ttl=300)
+def _razdoblja_i_praznici():
+    sheet = _init_sheet()
+    return ucitaj_razdoblja(sheet), ucitaj_praznike(sheet)
+
+
 def _kartica_zauzetost():
     """Tjedni pregled zauzetosti učionica — samo "ZAUZETO", bez detalja (2.10.2026.)."""
     st.caption("Kad su učionice zauzete grupama (Matura, Upisi). **Grupe imaju prednost** — instrukcije u "
@@ -407,9 +418,9 @@ def _kartica_zauzetost():
                         key="zau_tjedan")
     pon = ponedjeljak_tjedna(dan)
     st.caption(f"Tjedan {pon:%d.%m.} – {pon + timedelta(days=6):%d.%m.%Y.}")
-    blokovi = blokovi_zauzetosti(_ucitaj("Grupe"), _ucitaj(naziv_taba_rasporeda_mature(SEZONA)),
-                                 ucitaj_razdoblja(_init_sheet()))
-    st.markdown(html_tjedne_mreze(blokovi, pon, javno=True), unsafe_allow_html=True)
+    razdoblja, praznici = _razdoblja_i_praznici()
+    blokovi = blokovi_zauzetosti(_ucitaj("Grupe"), _ucitaj(naziv_taba_rasporeda_mature(SEZONA)), razdoblja, praznici)
+    st.markdown(html_tjedne_mreze(blokovi, pon, javno=True, praznici=praznici), unsafe_allow_html=True)
 
 
 def prikazi_portal_profesora():
