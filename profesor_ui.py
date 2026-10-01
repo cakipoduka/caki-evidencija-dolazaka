@@ -10,6 +10,10 @@ rasporeda koji admin složi u 🎓 Raspored Matura. Vidi samo kante svojih predm
 
 Koriste ga caki-evidencija-dolazaka.py (glavna adresa) i pages/2_Instrukcije.py (stari link).
 
+2.10.2026.: ✅ Dolasci — profesor vidi samo SVOJE grupe Upisa (Grupe.redovni_nastavnik); grupe kolega tek
+kad odabere "Držim sat umjesto kolege". Nova kartica 🏫 Zauzetost učionica: tjedni pregled samo s oznakom
+"ZAUZETO – MATURA / UPISI" (bez programa, profesora i učenika) — da se instrukcije ne dogovaraju tada.
+
 Privatnost: profesor NIKAD ne vidi cijene, iznose ni ponude. Vidi samo svoje instrukcije i je li
 termin plaćen (✅). Naplatu gotovinom smije evidentirati samo profesor s ovlaštenjem
 (Nastavnici.naplata_gotovinom = Da, postavlja admin).
@@ -22,6 +26,12 @@ import streamlit as st
 
 from pipeline_upisi import (
     DANI_U_TJEDNU,
+    blok_aktivan_na_datum,
+    blokovi_zauzetosti,
+    html_tjedne_mreze,
+    ponedjeljak_tjedna,
+    ucitaj_razdoblja,
+    u_datum,
     INSTRUKCIJE_OBLICI,
     INSTRUKCIJE_PREDMETI,
     INSTRUKCIJE_TRAJANJA,
@@ -102,13 +112,28 @@ def _kartica_dolasci(sheet, nastavnik):
         st.info("Grupe još nisu postavljene.")
         return
     grupe_danas = df_grupe[(df_grupe["dan"] == dan_naziv) & (df_grupe["aktivna"].astype(str).str.lower() == "da")]
+    # samo grupe koje taj datum traju (Grupe.datum_od / datum_do; prazno = cijela sezona)
+    grupe_danas = grupe_danas[[blok_aktivan_na_datum({"datum_od": u_datum(g.get("datum_od")),
+                                                       "datum_do": u_datum(g.get("datum_do"))}, odabrani_datum)
+                               for _, g in grupe_danas.iterrows()]] if not grupe_danas.empty else grupe_danas
     if grupe_danas.empty:
         st.info(f"Nema aktivnih termina za {dan_naziv.lower()}.")
         return
-    # Svoje grupe prve (redovni nastavnik), ostale ispod — za zamjene
-    grupe_danas = grupe_danas.assign(_moja=grupe_danas.get("redovni_nastavnik", "") != nastavnik).sort_values(["_moja", "vrijeme"])
-    opcije = {f"{'⭐ ' if not g['_moja'] else ''}{g['program']} — {g['vrijeme']} ({g['ucionica']})": g["grupa_id"]
-              for _, g in grupe_danas.iterrows()}
+    # 2.10.2026.: profesor vidi samo SVOJE grupe; tuđe tek kad drži sat umjesto kolege
+    redovni_stupac = grupe_danas.get("redovni_nastavnik", pd.Series("", index=grupe_danas.index)).astype(str)
+    moje_g, ostale_g = grupe_danas[redovni_stupac == nastavnik], grupe_danas[redovni_stupac != nastavnik]
+    nacin = st.radio("Sat", ["moje", "zamjena"], horizontal=True, key="dol_nacin",
+                     format_func={"moje": f"⭐ Moje grupe ({len(moje_g)})",
+                                  "zamjena": f"🔄 Držim sat umjesto kolege ({len(ostale_g)})"}.get)
+    izbor_g = (moje_g if nacin == "moje" else ostale_g).sort_values("vrijeme")
+    if izbor_g.empty:
+        st.info(f"Nemate svojih grupa za {dan_naziv.lower()}. Grupe bez upisanog nastavnika su pod "
+                "\"Držim sat umjesto kolege\" — javite adminu da vas upiše kao redovnog nastavnika."
+                if nacin == "moje" else "Nema drugih grupa taj dan.")
+        return
+    opcije = {f"{g['program']} — {g['vrijeme']} ({g['ucionica']})"
+              + (f" · {g.get('redovni_nastavnik', '') or 'bez nastavnika'}" if nacin == "zamjena" else ""): g["grupa_id"]
+              for _, g in izbor_g.iterrows()}
     grupa_id = opcije[st.selectbox(f"Grupa ({dan_naziv})", options=list(opcije))]
     grupa_red = grupe_danas[grupe_danas["grupa_id"] == grupa_id].iloc[0]
     upisani_redovni = str(grupa_red.get("redovni_nastavnik", "") or "")
@@ -374,6 +399,19 @@ def _kartica_izvjestaj(sheet, nastavnik):
 
 # ------------------------------------------------------------------ portal
 
+def _kartica_zauzetost():
+    """Tjedni pregled zauzetosti učionica — samo "ZAUZETO", bez detalja (2.10.2026.)."""
+    st.caption("Kad su učionice zauzete grupama (Matura, Upisi). **Grupe imaju prednost** — instrukcije u "
+               "centru ne dogovarajte u tim terminima.")
+    dan = st.date_input("Tjedan (odaberite bilo koji dan)", value=sada_zagreb().date(), format="DD.MM.YYYY",
+                        key="zau_tjedan")
+    pon = ponedjeljak_tjedna(dan)
+    st.caption(f"Tjedan {pon:%d.%m.} – {pon + timedelta(days=6):%d.%m.%Y.}")
+    blokovi = blokovi_zauzetosti(_ucitaj("Grupe"), _ucitaj(naziv_taba_rasporeda_mature(SEZONA)),
+                                 ucitaj_razdoblja(_init_sheet()))
+    st.markdown(html_tjedne_mreze(blokovi, pon, javno=True), unsafe_allow_html=True)
+
+
 def prikazi_portal_profesora():
     sheet = _init_sheet()
     nastavnik = _prijava()
@@ -386,8 +424,8 @@ def prikazi_portal_profesora():
         vrsta, tekst = st.session_state.pop("_prof_poruka")
         getattr(st, vrsta)(tekst)
     smije_gotovinu = smije_naplatu_gotovinom(_ucitaj("Nastavnici"), nastavnik)
-    k_dol, k_mat, k_instr, k_izv = st.tabs(["✅ Dolasci — grupe", "🎓 Matura", "📝 Instrukcije",
-                                            "📄 Mjesečni izvještaj"])
+    k_dol, k_mat, k_instr, k_izv, k_zau = st.tabs(["✅ Dolasci — grupe", "🎓 Matura", "📝 Instrukcije",
+                                                   "📄 Mjesečni izvještaj", "🏫 Zauzetost učionica"])
     with k_dol:
         _kartica_dolasci(sheet, nastavnik)
     with k_mat:
@@ -396,3 +434,5 @@ def prikazi_portal_profesora():
         _kartica_instrukcije(sheet, nastavnik, smije_gotovinu)
     with k_izv:
         _kartica_izvjestaj(sheet, nastavnik)
+    with k_zau:
+        _kartica_zauzetost()
