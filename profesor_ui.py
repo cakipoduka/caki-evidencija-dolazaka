@@ -19,6 +19,9 @@ nova kartica 👩‍🎓 Moji učenici (kontakt samo ako ga admin dopusti); stat
 otkazivanje, nadoknada); 📒 bilješka sa sata (vidi i roditelj) može se ispraviti do ROK_PROFESOR_DANA dana;
 📄 izvještaj prikazuje i profesorov honorar (samo njegov iznos).
 
+13.10.2026.: nova kartica 📥 Novi upiti (profesor vidi otvorene upite za instrukcije BEZ imena i kontakta, javlja
+"Preuzimam" / "Ne mogu"; više profesora može preuzeti isti upit, dodjeljuje admin; logika u upiti_instrukcije.py).
+
 12.10.2026.: nova prva kartica 🏠 Danas (danasnji sati, sati koji čekaju upis i do kada, instrukcije bez
 statusa, status izvještaja; logika u profesor_danas.py); cijeli portal je layout="wide".
 
@@ -33,6 +36,7 @@ import pandas as pd
 import streamlit as st
 
 import profesor_danas as _danas
+import upiti_instrukcije as _upiti
 
 from pipeline_upisi import (
     DODJELE_TAB,
@@ -533,6 +537,59 @@ def _kartica_izvjestaj(sheet, nastavnik):
 
 
 
+
+# ------------------------------------------------------------------ 📥 novi upiti (13.10.2026.)
+
+def _upiti_otvoreni() -> list:
+    return _upiti.otvoreni_upiti(_ucitaj("Prijave"), _ucitaj(DODJELE_TAB), sada_zagreb().date(), SEZONA)
+
+
+def _broj_neodgovorenih_upita(nastavnik) -> int:
+    """Za oznaku na kartici i na 🏠 Danas; greška (npr. tab još ne postoji) nikad ne ruši portal."""
+    try:
+        return _upiti.broj_neodgovorenih(_upiti_otvoreni(), _ucitaj(_upiti.UPITI_TAB), nastavnik,
+                                         predmeti_nastavnika(_ucitaj("Nastavnici"), nastavnik))
+    except Exception:
+        return 0
+
+
+def _kartica_upiti(sheet, nastavnik):
+    st.caption("Novi upiti za instrukcije. Ime i kontakt obitelji ne vide se dok vam admin ne dodijeli učenika. "
+               "**Preuzimam** = zainteresirani ste i imate termin; više kolega može preuzeti isti upit, a odluku "
+               "donosi admin. Do dodjele **ne kontaktirajte** obitelj.")
+    predmeti_prof = predmeti_nastavnika(_ucitaj("Nastavnici"), nastavnik)
+    samo_moji = st.toggle("Samo upiti za moje predmete", value=True, key="upiti_samo_moji") if predmeti_prof else False
+    upiti = _upiti.upiti_za_profesora(_upiti_otvoreni(), _ucitaj(_upiti.UPITI_TAB), nastavnik, predmeti_prof, samo_moji)
+    if not upiti:
+        st.success("Trenutno nema otvorenih upita. 👍")
+        return
+    for u in upiti:
+        with st.container(border=True):
+            c1, c2, c3 = st.columns([3, 4, 3], gap="medium")
+            c1.markdown(f"**{u['predmet'] or '—'}**")
+            c1.caption(" · ".join(x for x in [u["stupanj"], u["oblik"],
+                                              f"prije {u['dana']} dana" if u["dana"] is not None else ""] if x))
+            nap = c2.text_input("Kad vam odgovara (nije obavezno)", value=u["moja_napomena"],
+                                key=f"upit_nap_{u['redak_id']}", placeholder="npr. ponedjeljkom i srijedom poslije 17 h",
+                                max_chars=200)
+            if u["moj_odgovor"] == _upiti.ODGOVOR_PREUZIMAM:
+                c3.success("🙋 Preuzeli ste — čeka odluku admina")
+            elif u["moj_odgovor"] == _upiti.ODGOVOR_NE_MOGU:
+                c3.info("🚫 Javili ste da ne možete")
+            b1, b2 = c3.columns(2)
+            for gumb, odgovor, tekst, tip in ((b1, _upiti.ODGOVOR_PREUZIMAM, "🙋 Preuzimam", "primary"),
+                                              (b2, _upiti.ODGOVOR_NE_MOGU, "🚫 Ne mogu", "secondary")):
+                if gumb.button(tekst, key=f"upit_{odgovor}_{u['redak_id']}",
+                               type=tip if u["moj_odgovor"] != odgovor else "secondary",
+                               disabled=u["moj_odgovor"] == odgovor and nap == u["moja_napomena"]):
+                    try:
+                        _upiti.postavi_odgovor(sheet, u, nastavnik, odgovor, nap)
+                        _poruka("success", f"Spremljeno: {odgovor} — {u['predmet']}.")
+                    except ValueError as e:
+                        _poruka("error", str(e))
+                    st.cache_data.clear()
+                    st.rerun()
+
 # ------------------------------------------------------------------ 🏠 danas (12.10.2026.)
 
 def _kartica_danas(nastavnik):
@@ -558,6 +615,9 @@ def _kartica_danas(nastavnik):
 
     if praznici.get(danas):
         st.info(f"Danas je praznik: {praznici[danas]}.")
+    n_upita = _broj_neodgovorenih_upita(nastavnik)
+    if n_upita:
+        st.info(f"📥 Novih upita za instrukcije koje još niste odgovorili: **{n_upita}** — otvorite karticu 📥 Novi upiti.")
 
     lijevo, desno = st.columns(2, gap="large")
     with lijevo:
@@ -644,11 +704,14 @@ def prikazi_portal_profesora():
         vrsta, tekst = st.session_state.pop("_prof_poruka")
         getattr(st, vrsta)(tekst)
     smije_gotovinu = smije_naplatu_gotovinom(_ucitaj("Nastavnici"), nastavnik)
-    k_dan, k_dol, k_mat, k_instr, k_uc, k_izv, k_zau = st.tabs(["🏠 Danas", "✅ Dolasci — grupe", "🎓 Matura",
-                                                                "📝 Instrukcije", "👩‍🎓 Moji učenici",
-                                                                "📄 Mjesečni izvještaj", "🏫 Zauzetost učionica"])
+    n_upita = _broj_neodgovorenih_upita(nastavnik)
+    k_dan, k_upiti, k_dol, k_mat, k_instr, k_uc, k_izv, k_zau = st.tabs([
+        "🏠 Danas", f"📥 Novi upiti ({n_upita})" if n_upita else "📥 Novi upiti", "✅ Dolasci — grupe", "🎓 Matura",
+        "📝 Instrukcije", "👩‍🎓 Moji učenici", "📄 Mjesečni izvještaj", "🏫 Zauzetost učionica"])
     with k_dan:
         _kartica_danas(nastavnik)
+    with k_upiti:
+        _kartica_upiti(sheet, nastavnik)
     with k_dol:
         _kartica_dolasci(sheet, nastavnik)
     with k_mat:
