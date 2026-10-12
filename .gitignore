@@ -1,0 +1,10 @@
+# --- TAJNE: nikad na GitHub (dodano 11.10.2026., zadatak 03) ---
+.streamlit/secrets.toml
+secrets.toml
+*.json.key
+service_account*.json
+.env
+
+# --- Python smeće ---
+__pycache__/
+*.pyc
