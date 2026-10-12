@@ -19,6 +19,9 @@ nova kartica 👩‍🎓 Moji učenici (kontakt samo ako ga admin dopusti); stat
 otkazivanje, nadoknada); 📒 bilješka sa sata (vidi i roditelj) može se ispraviti do ROK_PROFESOR_DANA dana;
 📄 izvještaj prikazuje i profesorov honorar (samo njegov iznos).
 
+12.10.2026.: nova prva kartica 🏠 Danas (danasnji sati, sati koji čekaju upis i do kada, instrukcije bez
+statusa, status izvještaja; logika u profesor_danas.py); cijeli portal je layout="wide".
+
 Privatnost: profesor NIKAD ne vidi cijene, iznose ni ponude. Vidi samo svoje instrukcije i je li
 termin plaćen (✅). Naplatu gotovinom smije evidentirati samo profesor s ovlaštenjem
 (Nastavnici.naplata_gotovinom = Da, postavlja admin).
@@ -29,9 +32,12 @@ from datetime import date, timedelta
 import pandas as pd
 import streamlit as st
 
+import profesor_danas as _danas
+
 from pipeline_upisi import (
     DODJELE_TAB,
     HONORARI_TAB,
+    IZVJESTAJI_TAB,
     OTKAZ_SATI,
     OZNAKE_STATUSA_TERMINA,
     STATUSI_TERMINA,
@@ -526,6 +532,78 @@ def _kartica_izvjestaj(sheet, nastavnik):
         st.rerun()
 
 
+
+# ------------------------------------------------------------------ 🏠 danas (12.10.2026.)
+
+def _kartica_danas(nastavnik):
+    """Početni pregled: što je danas, što čeka upis i do kada, status izvještaja. Samo čitanje."""
+    danas = sada_zagreb().date()
+    razdoblja, praznici = _razdoblja_i_praznici()
+    blokovi = _danas.moji_blokovi(_ucitaj("Grupe"), _ucitaj(naziv_taba_rasporeda_mature(SEZONA)),
+                                  razdoblja, praznici, nastavnik)
+    df_termini = _ucitaj("Termini")
+    sati = _danas.danasnji_sati(blokovi, df_termini, danas, praznici)
+    kasne = _danas.nezabiljezeni_sati(blokovi, df_termini, danas, praznici)
+    instr = _danas.pregled_instrukcija(_ucitaj("Instrukcije_termini"), nastavnik, danas)
+    izv = _danas.status_izvjestaja(_ucitaj(IZVJESTAJI_TAB), nastavnik, danas)
+
+    hitno = [k for k in kasne if k["preostalo_dana"] <= 3]
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("👥 Grupni sati danas", len(sati))
+    m2.metric("📝 Instrukcije danas", len(instr["danas"]))
+    m3.metric("⏳ Čeka upis", len(kasne) + len(instr["cekaju_status"]),
+              help="Grupni sati bez zabilježenih dolazaka + instrukcije koje su još 'Zakazan', a datum je prošao.")
+    m4.metric("🚨 Rok ističe za ≤ 3 dana", len(hitno),
+              help=f"Sat se može upisati najviše {ROK_PROFESOR_DANA} dana unatrag, nakon toga ga upisuje admin.")
+
+    if praznici.get(danas):
+        st.info(f"Danas je praznik: {praznici[danas]}.")
+
+    lijevo, desno = st.columns(2, gap="large")
+    with lijevo:
+        st.markdown("#### 📅 Danas")
+        if not sati and not instr["danas"]:
+            st.caption("Danas nemate upisanih grupnih sati ni instrukcija.")
+        for b in sati:
+            oznaka = "✅ zabilježeno" if b["zabiljezen"] else "⬜ još nije zabilježeno"
+            st.markdown(f"**{b['vrijeme']}** · {b['izvor']} · {b['naziv']} · uč. {b['ucionica']} — {oznaka}")
+        for r in instr["danas"]:
+            st.markdown(f"**📝 Instrukcije** · {r['ucenik']} · {r['predmet'] or '—'} · {r['min']} min · "
+                        f"{OZNAKE_STATUSA_TERMINA.get(r['status'], r['status'])}")
+        if instr["nadolazece"]:
+            st.markdown("#### 🔜 Idućih 7 dana — zakazane instrukcije")
+            for r in instr["nadolazece"]:
+                st.markdown(f"{r['d']:%d.%m.} ({DANI_U_TJEDNU[r['d'].weekday()][:3]}) · {r['ucenik']} · "
+                            f"{r['predmet'] or '—'} · {r['min']} min")
+    with desno:
+        st.markdown("#### ⏳ Čeka upis")
+        if not kasne and not instr["cekaju_status"]:
+            st.success("Sve je zabilježeno. 👍")
+        if kasne:
+            tablica = pd.DataFrame({
+                "Sat": [f"{k['datum']:%d.%m.} {DANI_U_TJEDNU[k['datum'].weekday()][:3]} {k['vrijeme']}" for k in kasne],
+                "Grupa": [f"{k['naziv']} (uč. {k['ucionica']})" for k in kasne],
+                "Kartica": ["🎓 Matura" if k["izvor"] == "Matura" else "✅ Dolasci — grupe" for k in kasne],
+                "Zadnji dan za upis": [f"{k['zadnji_dan']:%d.%m.}" + (" 🚨" if k["preostalo_dana"] <= 3 else "")
+                                       for k in kasne],
+            })
+            st.dataframe(tablica, hide_index=True, width="stretch")
+        if instr["cekaju_status"]:
+            st.markdown("**Instrukcije bez konačnog statusa** (označite Održan / Otkazan u kartici 📝 Instrukcije):")
+            st.dataframe(pd.DataFrame({
+                "Datum": [f"{r['d']:%d.%m.}" for r in instr["cekaju_status"]],
+                "Učenik": [r["ucenik"] for r in instr["cekaju_status"]],
+                "Predmet": [r["predmet"] for r in instr["cekaju_status"]],
+                "Trajanje (min)": [r["min"] for r in instr["cekaju_status"]],
+            }), hide_index=True, width="stretch")
+
+    st.markdown("#### 📄 Mjesečni izvještaj")
+    g, m = _danas.prosli_mjesec(danas)
+    opis = f"{MJESECI_HR[m - 1]} {g}.: **{izv['status']}**"
+    if izv["napomena_admin"]:
+        opis += f" — napomena admina: *{izv['napomena_admin']}*"
+    (st.warning if izv["status"] in ("Nije poslan", "Vraćeno na ispravak") else st.info)(opis)
+
 # ------------------------------------------------------------------ portal
 
 @st.cache_data(ttl=300)
@@ -547,7 +625,14 @@ def _kartica_zauzetost():
     st.markdown(html_tjedne_mreze(blokovi, pon, javno=True, praznici=praznici), unsafe_allow_html=True)
 
 
+def _siri_stranicu():
+    """Širi sadržaj (layout="wide" + manji bočni razmaci) da tablice i popisi stanu pregledno."""
+    st.markdown("<style>.block-container{max-width:100%!important;padding-left:2rem!important;"
+                "padding-right:2rem!important;padding-top:2rem!important}</style>", unsafe_allow_html=True)
+
+
 def prikazi_portal_profesora():
+    _siri_stranicu()
     sheet = _init_sheet()
     nastavnik = _prijava()
     c1, c2 = st.columns([4, 1])
@@ -559,9 +644,11 @@ def prikazi_portal_profesora():
         vrsta, tekst = st.session_state.pop("_prof_poruka")
         getattr(st, vrsta)(tekst)
     smije_gotovinu = smije_naplatu_gotovinom(_ucitaj("Nastavnici"), nastavnik)
-    k_dol, k_mat, k_instr, k_uc, k_izv, k_zau = st.tabs(["✅ Dolasci — grupe", "🎓 Matura", "📝 Instrukcije",
-                                                         "👩‍🎓 Moji učenici", "📄 Mjesečni izvještaj",
-                                                         "🏫 Zauzetost učionica"])
+    k_dan, k_dol, k_mat, k_instr, k_uc, k_izv, k_zau = st.tabs(["🏠 Danas", "✅ Dolasci — grupe", "🎓 Matura",
+                                                                "📝 Instrukcije", "👩‍🎓 Moji učenici",
+                                                                "📄 Mjesečni izvještaj", "🏫 Zauzetost učionica"])
+    with k_dan:
+        _kartica_danas(nastavnik)
     with k_dol:
         _kartica_dolasci(sheet, nastavnik)
     with k_mat:

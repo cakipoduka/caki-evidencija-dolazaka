@@ -21,5 +21,5 @@ if os.path.getmtime(_portal.__file__) > getattr(_portal, "_ucitano_u", 0) or \
     _portal._ucitano_u = time.time()
     _portal._pipeline_u = getattr(_pipeline, "_ucitano_u", 0)
 
-st.set_page_config(page_title="CAKI — profesori", page_icon="🎓", layout="centered")
+st.set_page_config(page_title="CAKI — profesori", page_icon="🎓", layout="wide")
 _portal.prikazi_portal_profesora()
