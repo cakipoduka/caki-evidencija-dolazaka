@@ -19,6 +19,9 @@ nova kartica 👩‍🎓 Moji učenici (kontakt samo ako ga admin dopusti); stat
 otkazivanje, nadoknada); 📒 bilješka sa sata (vidi i roditelj) može se ispraviti do ROK_PROFESOR_DANA dana;
 📄 izvještaj prikazuje i profesorov honorar (samo njegov iznos).
 
+13.10.2026.: nova kartica 🗓️ Dostupnost (profesor unosi tjedne slobodne termine za nove instrukcije, do 2 okvira dnevno,
+oblik Uživo/Online/Oboje, "ne primam nove učenike"; admin to vidi uz upite; logika u dostupnost_profesora.py).
+
 13.10.2026.: nova kartica 📥 Novi upiti (profesor vidi otvorene upite za instrukcije BEZ imena i kontakta, javlja
 "Preuzimam" / "Ne mogu"; više profesora može preuzeti isti upit, dodjeljuje admin; logika u upiti_instrukcije.py).
 
@@ -36,6 +39,7 @@ import pandas as pd
 import streamlit as st
 
 import profesor_danas as _danas
+import dostupnost_profesora as _dost
 import upiti_instrukcije as _upiti
 
 from pipeline_upisi import (
@@ -590,6 +594,79 @@ def _kartica_upiti(sheet, nastavnik):
                     st.cache_data.clear()
                     st.rerun()
 
+
+# ------------------------------------------------------------------ 🗓️ dostupnost (13.10.2026.)
+
+def _kartica_dostupnost(sheet, nastavnik):
+    """Tjedna dostupnost za NOVE instrukcije. Služi adminu da zna kome može dodijeliti novog učenika; ništa se ne šalje."""
+    trenutna = _dost.dostupnost_profesora(_ucitaj(_dost.DOSTUPNOST_TAB), nastavnik)
+    st.caption("Označite dane i vrijeme kad biste mogli preuzeti **nove** instrukcije (do dva okvira dnevno). "
+               "Admin to vidi kad dodjeljuje nove učenike. Postojeće termine ovo ne mijenja.")
+    if not trenutna["prozori"] and not trenutna["pauza"]:
+        st.info("Još niste unijeli dostupnost.")
+    elif _dost.zastarjelo(trenutna):
+        st.warning(f"Dostupnost je zadnji put ažurirana {trenutna['azurirano'][:10] or 'davno'} — provjerite je li još točna "
+                   "pa kliknite Spremi.")
+    else:
+        st.success("Spremljeno: " + _dost.sazetak(trenutna) + f"  ·  ažurirano {trenutna['azurirano'][:16]}")
+
+    g1, g2 = st.columns([2, 3], gap="large")
+    pauza = g1.toggle("⏸️ Trenutno ne primam nove učenike", value=trenutna["pauza"], key="dost_pauza")
+    napomena = g2.text_input("Napomena za admina (nije obavezno)", value=trenutna["napomena"], key="dost_nap",
+                             placeholder="npr. do kraja studenog samo online", max_chars=300)
+
+    po_danu = {d: [p for p in trenutna["prozori"] if p["dan"] == d] for d in DANI_U_TJEDNU}
+    h = st.columns([2, 1.2, 1.2, 1.2, 1.2, 1.6])
+    for kol, naslov in zip(h, ["Dan", "Od", "Do", "Drugi okvir od", "do", "Oblik"]):
+        kol.caption(naslov)
+
+    def _idx(opcije, vrijednost, zadano):
+        return opcije.index(vrijednost) if vrijednost in opcije else opcije.index(zadano)
+
+    redovi, greske = [], []
+    vrijeme_opcije = _dost.VREMENA
+    drugi_opcije = ["—"] + _dost.VREMENA
+    for dan in DANI_U_TJEDNU:
+        p = po_danu[dan]
+        c = st.columns([2, 1.2, 1.2, 1.2, 1.2, 1.6])
+        on = c[0].toggle(dan, value=bool(p), key=f"dost_{dan}_on", disabled=pauza)
+        od1 = c[1].selectbox("od", vrijeme_opcije, index=_idx(vrijeme_opcije, p[0]["od"] if p else "", "16:00"),
+                             key=f"dost_{dan}_od1", disabled=pauza or not on, label_visibility="collapsed")
+        do1 = c[2].selectbox("do", vrijeme_opcije, index=_idx(vrijeme_opcije, p[0]["do"] if p else "", "20:00"),
+                             key=f"dost_{dan}_do1", disabled=pauza or not on, label_visibility="collapsed")
+        od2 = c[3].selectbox("od2", drugi_opcije, index=_idx(drugi_opcije, p[1]["od"] if len(p) > 1 else "—", "—"),
+                             key=f"dost_{dan}_od2", disabled=pauza or not on, label_visibility="collapsed")
+        do2 = c[4].selectbox("do2", drugi_opcije, index=_idx(drugi_opcije, p[1]["do"] if len(p) > 1 else "—", "—"),
+                             key=f"dost_{dan}_do2", disabled=pauza or not on, label_visibility="collapsed")
+        oblik = c[5].selectbox("oblik", _dost.OBLICI, index=_idx(_dost.OBLICI, p[0]["oblik"] if p else "", "Oboje"),
+                               key=f"dost_{dan}_oblik", disabled=pauza or not on, label_visibility="collapsed")
+        if on and not pauza:
+            redovi.append({"dan": dan, "od": od1, "do": do1, "oblik": oblik})
+            if (od2 == "—") != (do2 == "—"):
+                greske.append(f"{dan}: za drugi okvir odaberite i početak i kraj (ili oboje ostavite na —).")
+            elif od2 != "—":
+                redovi.append({"dan": dan, "od": od2, "do": do2, "oblik": oblik})
+
+    try:
+        razdoblja, praznici = _razdoblja_i_praznici()
+        blokovi = _danas.moji_blokovi(_ucitaj("Grupe"), _ucitaj(naziv_taba_rasporeda_mature(SEZONA)),
+                                      razdoblja, praznici, nastavnik)
+        for w in _dost.preklapanja_s_grupama(redovi, blokovi):
+            st.warning("⚠ " + w)
+    except Exception:
+        pass
+    for g in greske:
+        st.error(g)
+
+    if st.button("💾 Spremi dostupnost", type="primary", key="dost_spremi", disabled=bool(greske)):
+        try:
+            n = _dost.spremi_dostupnost(sheet, nastavnik, redovi, pauza=pauza, napomena=napomena)
+            _poruka("success", "Dostupnost spremljena: " + ("ne primate nove učenike." if pauza else f"{n} okvir(a) u tjednu."))
+        except ValueError as e:
+            _poruka("error", str(e))
+        st.cache_data.clear()
+        st.rerun()
+
 # ------------------------------------------------------------------ 🏠 danas (12.10.2026.)
 
 def _kartica_danas(nastavnik):
@@ -618,6 +695,11 @@ def _kartica_danas(nastavnik):
     n_upita = _broj_neodgovorenih_upita(nastavnik)
     if n_upita:
         st.info(f"📥 Novih upita za instrukcije koje još niste odgovorili: **{n_upita}** — otvorite karticu 📥 Novi upiti.")
+    try:
+        if _dost.zastarjelo(_dost.dostupnost_profesora(_ucitaj(_dost.DOSTUPNOST_TAB), nastavnik)):
+            st.info("🗓️ Dostupnost za nove instrukcije nije unesena ili je stara — ažurirajte je u kartici 🗓️ Dostupnost.")
+    except Exception:
+        pass
 
     lijevo, desno = st.columns(2, gap="large")
     with lijevo:
@@ -705,13 +787,16 @@ def prikazi_portal_profesora():
         getattr(st, vrsta)(tekst)
     smije_gotovinu = smije_naplatu_gotovinom(_ucitaj("Nastavnici"), nastavnik)
     n_upita = _broj_neodgovorenih_upita(nastavnik)
-    k_dan, k_upiti, k_dol, k_mat, k_instr, k_uc, k_izv, k_zau = st.tabs([
-        "🏠 Danas", f"📥 Novi upiti ({n_upita})" if n_upita else "📥 Novi upiti", "✅ Dolasci — grupe", "🎓 Matura",
+    k_dan, k_upiti, k_dost, k_dol, k_mat, k_instr, k_uc, k_izv, k_zau = st.tabs([
+        "🏠 Danas", f"📥 Novi upiti ({n_upita})" if n_upita else "📥 Novi upiti", "🗓️ Dostupnost",
+        "✅ Dolasci — grupe", "🎓 Matura",
         "📝 Instrukcije", "👩‍🎓 Moji učenici", "📄 Mjesečni izvještaj", "🏫 Zauzetost učionica"])
     with k_dan:
         _kartica_danas(nastavnik)
     with k_upiti:
         _kartica_upiti(sheet, nastavnik)
+    with k_dost:
+        _kartica_dostupnost(sheet, nastavnik)
     with k_dol:
         _kartica_dolasci(sheet, nastavnik)
     with k_mat:
