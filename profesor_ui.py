@@ -47,6 +47,7 @@ import streamlit as st
 import profesor_danas as _danas
 import dostupnost_profesora as _dost
 import upiti_instrukcije as _upiti
+import sat_biljeska as _sat
 
 from pipeline_upisi import (
     DODJELE_TAB,
@@ -118,6 +119,77 @@ def _ucitaj(naziv: str) -> pd.DataFrame:
 
 def _poruka(vrsta, tekst):
     st.session_state["_prof_poruka"] = (vrsta, tekst)
+
+
+# ------------------------------------------------------------------ 📚 teme, ocjena sata, zadaća (17.10.2026.)
+
+def _kljuc_baze(predmet: str, stupanj: str) -> str:
+    """Secret s ID-em Sheeta baze zadataka za taj predmet (BAZA_SHEET_ID_*), ili ''."""
+    p = str(predmet or "").strip().lower()
+    if p.startswith("matemat"):
+        return "BAZA_SHEET_ID_MATEMATIKA_OS" if "osnov" in str(stupanj or "").lower() else "BAZA_SHEET_ID_MATEMATIKA"
+    if p.startswith("fizik"):
+        return "BAZA_SHEET_ID_FIZIKA"
+    return ""
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _popis_tema(predmet: str, stupanj: str) -> list:
+    """Teme za izbornik iz šifrarnika baze zadataka. Ako secret/pristup ne postoji → [] (slobodan unos)."""
+    kljuc = _kljuc_baze(predmet, stupanj)
+    try:
+        if not kljuc or not str(st.secrets.get(kljuc, "")).strip():
+            return []
+        sa_info = json.loads(st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"])
+        baza = get_gspread_client(sa_info).open_by_key(str(st.secrets[kljuc]).strip())
+        return _sat.popis_tema(_sat.ucitaj_sifrarnik(baza))
+    except Exception:
+        return []
+
+
+def _polja_sata(kljuc: str, predmet: str, stupanj: str, teme0=(), ocjena0: str = "", zadaca0: bool = False):
+    """Widgeti: teme, ocjena sata, zadaća zadana. Vraća (teme_lista, ocjena, zadaca_zadana)."""
+    opcije = _popis_tema(predmet, stupanj)
+    spremljene = list(teme0)
+    sve = list(dict.fromkeys(opcije + [t for t in spremljene if t in opcije]))
+    st.markdown("**📚 Što smo radili na satu**")
+    teme = st.multiselect("Teme i podcjeline", sve, default=[t for t in spremljene if t in sve], key=f"{kljuc}_teme",
+                          placeholder="Odaberi iz popisa (možeš upisati za pretraživanje)",
+                          help="Popis dolazi iz baze zadataka." if opcije else
+                          "Popis tema za ovaj predmet još nije povezan — upiši teme ručno ispod.")
+    ostale = ", ".join(t for t in spremljene if t not in sve)
+    dodatne = st.text_input("Druge teme (slobodan tekst, zarezom)", value=ostale, key=f"{kljuc}_teme_txt")
+    c1, c2 = st.columns(2)
+    ocjena = c1.radio("Kako je prošao sat", ["", "+", "-"], index=["", "+", "-"].index(ocjena0) if ocjena0 in ("+", "-") else 0,
+                      format_func=lambda x: {"": "— (bez ocjene)", "+": "➕ dobro", "-": "➖ slabije"}[x], horizontal=True,
+                      key=f"{kljuc}_ocjena", help="Vidite samo vi i admin. Roditelj ocjenu ne vidi.")
+    zadaca = c2.checkbox("📝 Zadana zadaća", value=zadaca0, key=f"{kljuc}_zadaca",
+                         help="Na sljedećem satu označit ćete je li napravljena.")
+    return teme + [x.strip() for x in dodatne.split(",") if x.strip()], ocjena, zadaca
+
+
+def _blok_zadaca_na_cekanju(sheet, nastavnik, ucenik_id, kljuc: str, df_instr):
+    """Prije novog sata: je li napravljena zadaća zadana na prethodnom satu (profesor označava na sljedećem satu)."""
+    z = _sat.zadaca_na_cekanju(df_instr, ucenik_id)
+    if not z:
+        return
+    with st.container(border=True):
+        st.markdown(f"📝 **Zadaća zadana {z['datum'].strftime('%d.%m.%Y.')}**"
+                    + (f" ({z['predmet']})" if z["predmet"] else "") + " — je li napravljena?")
+        if z["teme"]:
+            st.caption(f"Teme tog sata: {z['teme'].replace(' ; ', ', ')}")
+        a, b = st.columns([3, 1])
+        izbor = a.radio("Zadaća", _sat.ZADACA_STATUSI, horizontal=True, label_visibility="collapsed",
+                        format_func=lambda x: {"Da": "✅ Napravljena", "Djelomično": "🟡 Djelomično",
+                                               "Ne": "❌ Nije napravljena"}[x], key=f"zad_{kljuc}_{z['termin_id']}")
+        if b.button("💾 Spremi", key=f"zad_s_{kljuc}_{z['termin_id']}"):
+            try:
+                _sat.oznaci_zadacu(sheet, z["termin_id"], izbor, nastavnik, df_instr, _ucitaj(DODJELE_TAB))
+                _poruka("success", "Zadaća označena.")
+            except ValueError as e:
+                _poruka("error", str(e))
+            st.cache_data.clear()
+            st.rerun()
 
 
 # ------------------------------------------------------------------ prijava
@@ -357,6 +429,11 @@ def _kartica_moji_ucenici(nastavnik):
                     c2.caption(f"📞 {u['mobitel_djeteta']}")
             else:
                 st.caption("🔒 Kontakt nije dopušten — termin dogovara admin.")
+            povijest = _sat.povijest_ucenika(_ucitaj("Instrukcije_termini"), u["ucenik_id"])
+            if not povijest.empty:
+                with st.expander(f"📚 Povijest sati i obrađene teme ({len(povijest)})"):
+                    st.caption("Svi dosadašnji sati ovog učenika (i kod drugih profesora, bez imena i plaćanja).")
+                    st.dataframe(povijest, hide_index=True, width="stretch")
 
 
 def _kartica_instrukcije(sheet, nastavnik, smije_gotovinu):
@@ -372,6 +449,7 @@ def _kartica_instrukcije(sheet, nastavnik, smije_gotovinu):
         u = opcije[st.selectbox("Učenik (samo vaši)", options=list(opcije), key="instr_ucenik")]
         uid, ime = u["ucenik_id"], u["ime_djeteta"]
         zadani_predmet = (u["predmet"].split(", ")[0] if u["predmet"] else "")
+        _blok_zadaca_na_cekanju(sheet, nastavnik, uid, "novi", df_instr)
         with st.form("novi_termin_form", clear_on_submit=True):
             if ima_status:
                 status = st.radio("Termin", STATUSI_TERMINA, horizontal=True, format_func=OZNAKE_STATUSA_TERMINA.get,
@@ -392,6 +470,7 @@ def _kartica_instrukcije(sheet, nastavnik, smije_gotovinu):
             gotovina = st.checkbox("💵 Naplaćeno gotovinom") if smije_gotovinu else False
             nap_jav = st.text_area("📒 Bilješka sa sata — što se radilo, domaća zadaća (vidi i roditelj)")
             nap_int = st.text_area("Napomena interna (vidite samo vi i admin)")
+            teme_n, ocjena_n, zadaca_n = _polja_sata("novi", predmet, stupanj)
             if st.form_submit_button("💾 Spremi termin", type="primary"):
                 danas = sada_zagreb().date()
                 if status not in ("Zakazan", "Otkazan na vrijeme") and datum > danas:
@@ -401,12 +480,17 @@ def _kartica_instrukcije(sheet, nastavnik, smije_gotovinu):
                 elif datum < danas - timedelta(days=ROK_PROFESOR_DANA):
                     st.error(f"Termin se može upisati najviše {ROK_PROFESOR_DANA} dana unatrag — za stariji se javite adminu.")
                 else:
-                    dodaj_instrukciju_termin(
+                    novi_id = dodaj_instrukciju_termin(
                         sheet, ucenik_id=uid, ime_djeteta=ime, nastavnik=nastavnik, datum=str(datum),
                         duljina_min=duljina, oblik=oblik, broj_ucenika_u_grupi=broj if oblik == "Grupa" else None,
                         placeno_oznaka_prof=PLACENO_GOTOVINOM if gotovina else "Ne",
                         napomena_interna=nap_int, napomena_javna=nap_jav, predmet=predmet, stupanj_skolovanja=stupanj,
                         status_termina=status, vrijeme=vrijeme)
+                    if status not in _sat.STATUSI_BEZ_SATA and (teme_n or ocjena_n or zadaca_n):
+                        try:
+                            _sat.spremi_sat(sheet, novi_id, teme_n, ocjena_n, zadaca_n, nastavnik=nastavnik)
+                        except ValueError as e:
+                            _poruka("warning", f"Termin je spremljen, ali teme/zadaća nisu: {e}")
                     _poruka("success", f"Termin spremljen: {ime}, {datum.strftime('%d.%m.%Y.')} ({status}).")
                     st.cache_data.clear()
                     st.rerun()
@@ -457,6 +541,15 @@ def _kartica_instrukcije(sheet, nastavnik, smije_gotovinu):
         "📒 Bilješka sa sata": moji_t.get("napomena_javna", ""),
         "Napomena": moji_t.get("napomena_interna", ""),
     })
+    if "teme" in moji_t.columns:
+        tablica["📚 Teme"] = [str(v).replace(" ; ", ", ") for v in moji_t["teme"]]
+    if "ocjena_sata" in moji_t.columns:
+        tablica["Ocjena"] = moji_t["ocjena_sata"]
+    if "zadaca_zadana" in moji_t.columns:
+        tablica["📝 Zadaća"] = ["" if str(z) != "Da" else _sat.ZADACA_OZNAKE.get(str(n or ""), "")
+                               for z, n in zip(moji_t["zadaca_zadana"],
+                                               moji_t["zadaca_napravljena"] if "zadaca_napravljena" in moji_t.columns
+                                               else [""] * len(moji_t))]
     if ima_status:
         tablica.insert(1, "Termin", [OZNAKE_STATUSA_TERMINA.get(str(v or "Održan"), str(v)).split(" (")[0]
                                      for v in moji_t["status_termina"]])
@@ -475,9 +568,16 @@ def _kartica_instrukcije(sheet, nastavnik, smije_gotovinu):
                                key=f"bilj_j_{t['termin_id']}")
             inte = st.text_area("Napomena interna", value=str(t.get("napomena_interna", "") or ""),
                                 key=f"bilj_i_{t['termin_id']}")
+            teme_e, ocjena_e, zadaca_e = _polja_sata(
+                f"bilj_{t['termin_id']}", str(t.get("predmet", "") or ""), str(t.get("stupanj_skolovanja", "") or ""),
+                teme0=_sat.teme_iz_teksta(t.get("teme", "")), ocjena0=str(t.get("ocjena_sata", "") or ""),
+                zadaca0=str(t.get("zadaca_zadana", "") or "") == "Da")
+            _blok_zadaca_na_cekanju(sheet, nastavnik, t["ucenik_id"], f"bilj_{t['termin_id']}", df_instr)
             if st.button("💾 Spremi bilješku", key=f"bilj_s_{t['termin_id']}"):
                 try:
                     uredi_biljesku_sata(sheet, t["termin_id"], jav, inte, nastavnik=nastavnik, rok_dana=ROK_PROFESOR_DANA)
+                    _sat.spremi_sat(sheet, t["termin_id"], teme_e, ocjena_e, zadaca_e, nastavnik=nastavnik,
+                                    rok_dana=ROK_PROFESOR_DANA)
                     _poruka("success", "Bilješka spremljena.")
                 except ValueError as e:
                     _poruka("error", str(e))
