@@ -25,6 +25,9 @@ oblik Uživo/Online/Oboje, "ne primam nove učenike"; admin to vidi uz upite; lo
 13.10.2026.: nova kartica 📥 Novi upiti (profesor vidi otvorene upite za instrukcije BEZ imena i kontakta, javlja
 "Preuzimam" / "Ne mogu"; više profesora može preuzeti isti upit, dodjeljuje admin; logika u upiti_instrukcije.py).
 
+17.10.2026.: nova kartica 📅 Kalendar centra (ugrađen dijeljeni Google kalendar centra, samo za
+gledanje; uređivanje ostaje u Google kalendaru, mjerodavna zauzetost učionica je 🏫 Zauzetost učionica).
+
 12.10.2026.: nova prva kartica 🏠 Danas (danasnji sati, sati koji čekaju upis i do kada, instrukcije bez
 statusa, status izvještaja; logika u profesor_danas.py); cijeli portal je layout="wide".
 
@@ -32,8 +35,11 @@ Privatnost: profesor NIKAD ne vidi cijene, iznose ni ponude. Vidi samo svoje ins
 termin plaćen (✅). Naplatu gotovinom smije evidentirati samo profesor s ovlaštenjem
 (Nastavnici.naplata_gotovinom = Da, postavlja admin).
 """
+import base64
 import json
 from datetime import date, timedelta
+
+import streamlit.components.v1 as _components
 
 import pandas as pd
 import streamlit as st
@@ -59,6 +65,8 @@ from pipeline_upisi import (
     blok_aktivan_na_datum,
     blokovi_zauzetosti,
     html_tjedne_mreze,
+    naziv_ucionice_centra,
+    oznaka_ucionice,
     ponedjeljak_tjedna,
     razdoblje_grupe_upisa,
     ucitaj_praznike,
@@ -166,7 +174,7 @@ def _kartica_dolasci(sheet, nastavnik):
                 "\"Držim sat umjesto kolege\" — javite adminu da vas upiše kao redovnog nastavnika."
                 if nacin == "moje" else "Nema drugih grupa taj dan.")
         return
-    opcije = {f"{g['program']} — {g['vrijeme']} ({g['ucionica']})"
+    opcije = {f"{g['program']} — {g['vrijeme']} ({naziv_ucionice_centra(oznaka_ucionice(g['ucionica']))})"
               + (f" · {g.get('redovni_nastavnik', '') or 'bez nastavnika'}" if nacin == "zamjena" else ""): g["grupa_id"]
               for _, g in izbor_g.iterrows()}
     grupa_id = opcije[st.selectbox(f"Grupa ({dan_naziv})", options=list(opcije))]
@@ -767,6 +775,35 @@ def _kartica_zauzetost():
     st.markdown(html_tjedne_mreze(blokovi, pon, javno=True, praznici=praznici), unsafe_allow_html=True)
 
 
+KALENDAR_CENTRA_ID = ("c_8470d1f97dcaa6569bd507e994dd08ea57676651b41aa9c0561c6d493efe9f72"
+                      "@group.calendar.google.com")
+KALENDAR_PRAZNICI_ID = "hr.croatian.official#holiday@group.v.calendar.google.com"
+
+
+def _kalendar_url(nacin: str = "WEEK") -> str:
+    """Ugradni (embed) URL dijeljenog kalendara centra, isti kalendar koji je na web stranici."""
+    def b64(x):
+        return base64.b64encode(x.encode()).decode()
+    return ("https://calendar.google.com/calendar/embed?height=650&wkst=2"
+            f"&ctz=Europe%2FZagreb&mode={nacin}"
+            f"&src={b64(KALENDAR_CENTRA_ID)}&color=%23009688"
+            f"&src={b64(KALENDAR_PRAZNICI_ID)}")
+
+
+def _kartica_kalendar():
+    """17.10.2026.: prikaz dijeljenog Google kalendara centra u portalu — SAMO ZA GLEDANJE.
+    Uređivanje ide u samom Google kalendaru (profesor mora biti prijavljen na Google račun koji
+    ima pristup kalendaru). Raspored i zauzetost učionica se NE vode odavde nego iz CRM-a —
+    kalendar je pregled, a mjerodavna je kartica 🏫 Zauzetost učionica."""
+    st.caption("Dijeljeni kalendar centra (isti koji je na web stranici). Ovdje je **samo za "
+               "gledanje** — za uređivanje otvorite kalendar u Googleu. Mjerodavna zauzetost "
+               "učionica je u kartici 🏫 Zauzetost učionica.")
+    nacin = st.radio("Prikaz", ["WEEK", "AGENDA", "MONTH"], horizontal=True, key="kal_nacin",
+                     format_func={"WEEK": "Tjedan", "AGENDA": "Popis", "MONTH": "Mjesec"}.get)
+    _components.iframe(_kalendar_url(nacin), height=650, scrolling=True)
+    st.link_button("↗ Otvori u Google kalendaru", "https://calendar.google.com/calendar/r")
+
+
 def _siri_stranicu():
     """Širi sadržaj (layout="wide" + manji bočni razmaci) da tablice i popisi stanu pregledno."""
     st.markdown("<style>.block-container{max-width:100%!important;padding-left:2rem!important;"
@@ -787,10 +824,12 @@ def prikazi_portal_profesora():
         getattr(st, vrsta)(tekst)
     smije_gotovinu = smije_naplatu_gotovinom(_ucitaj("Nastavnici"), nastavnik)
     n_upita = _broj_neodgovorenih_upita(nastavnik)
-    k_dan, k_upiti, k_dost, k_dol, k_mat, k_instr, k_uc, k_izv, k_zau = st.tabs([
+    (k_dan, k_upiti, k_dost, k_dol, k_mat, k_instr, k_uc, k_izv, k_zau,
+     k_kal) = st.tabs([
         "🏠 Danas", f"📥 Novi upiti ({n_upita})" if n_upita else "📥 Novi upiti", "🗓️ Dostupnost",
         "✅ Dolasci — grupe", "🎓 Matura",
-        "📝 Instrukcije", "👩‍🎓 Moji učenici", "📄 Mjesečni izvještaj", "🏫 Zauzetost učionica"])
+        "📝 Instrukcije", "👩‍🎓 Moji učenici", "📄 Mjesečni izvještaj", "🏫 Zauzetost učionica",
+        "📅 Kalendar centra"])
     with k_dan:
         _kartica_danas(nastavnik)
     with k_upiti:
@@ -809,3 +848,5 @@ def prikazi_portal_profesora():
         _kartica_izvjestaj(sheet, nastavnik)
     with k_zau:
         _kartica_zauzetost()
+    with k_kal:
+        _kartica_kalendar()
