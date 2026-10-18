@@ -85,6 +85,26 @@ from pipeline_upisi import (
     naziv_taba_rasporeda_mature,
     postojeci_dolasci,
     predmeti_nastavnika,
+    BLOKOVI_TAB,
+    blokovi_nastavnika,
+    grupe_nastavnika_s_blokom,
+    slobodni_blokovi,
+    preuzmi_blok,
+    otpusti_blok,
+    NAJAM_TAB,
+    PROFILI_PROFESORA_TAB,
+    UCIONICE_CENTRA,
+    blok_iz_unosa_grupe,
+    je_ispravno_vrijeme,
+    je_najmoprimac,
+    najam_sazetak,
+    najam_termini,
+    opcija_ucionice_upisi,
+    otkazi_najam,
+    otkazi_termin,
+    otkazani_po_kljucu,
+    provjeri_grupu_upisa,
+    upisi_najam,
     zadnji_datum_dana,
     PLACENO_GOTOVINOM,
     STATUSI_ZA_OBRACUN,
@@ -216,7 +236,10 @@ def _prijava():
 # ------------------------------------------------------------------ ✅ dolasci
 
 def _kartica_dolasci(sheet, nastavnik):
-    odabrani_datum = st.date_input("Datum termina", value=date.today(), format="DD.MM.YYYY")
+    # 18.10.2026.: sada_zagreb(), ne date.today() — server je u UTC-u, pa je profesor nakon
+    # ponoći po našem vremenu dobivao prethodni dan i "nema aktivnih termina".
+    odabrani_datum = st.date_input("Datum termina", value=sada_zagreb().date(),
+                                   format="DD.MM.YYYY")
     dan_naziv = DANI_U_TJEDNU[odabrani_datum.weekday()]
     df_grupe, df_rez, df_ucenici = _ucitaj("Grupe"), _ucitaj("Rezervacije"), _ucitaj("Učenici")
     if df_grupe.empty:
@@ -236,7 +259,11 @@ def _kartica_dolasci(sheet, nastavnik):
         return
     # 2.10.2026.: profesor vidi samo SVOJE grupe; tuđe tek kad drži sat umjesto kolege
     redovni_stupac = grupe_danas.get("redovni_nastavnik", pd.Series("", index=grupe_danas.index)).astype(str)
-    moje_g, ostale_g = grupe_danas[redovni_stupac == nastavnik], grupe_danas[redovni_stupac != nastavnik]
+    # 18.10.2026.: grupa je "moja" i kad nisam redovni nastavnik, ali toga dana držim blok u njoj
+    # (višepredmetni termin, npr. PRELOG — v. kartica 🧩 Moji blokovi).
+    s_blokom = grupe_nastavnika_s_blokom(_ucitaj(BLOKOVI_TAB), nastavnik, odabrani_datum)
+    je_moja = (redovni_stupac == nastavnik) | grupe_danas["grupa_id"].astype(str).isin(s_blokom)
+    moje_g, ostale_g = grupe_danas[je_moja], grupe_danas[~je_moja]
     nacin = st.radio("Sat", ["moje", "zamjena"], horizontal=True, key="dol_nacin",
                      format_func={"moje": f"⭐ Moje grupe ({len(moje_g)})",
                                   "zamjena": f"🔄 Držim sat umjesto kolege ({len(ostale_g)})"}.get)
@@ -256,6 +283,9 @@ def _kartica_dolasci(sheet, nastavnik):
     danas_predaje = st.text_input("Danas predaje", value=nastavnik)
     if upisani_redovni and danas_predaje != upisani_redovni:
         st.warning(f"⚠ Zamjena — redovni nastavnik je {upisani_redovni}. Bilježi se automatski.")
+
+    if _otkazivanje_termina(sheet, nastavnik, grupa_id, odabrani_datum):
+        return          # otkazan termin se ne evidentira
 
     roster = roster_grupe(df_rez, grupa_id)
     if roster.empty:
@@ -458,7 +488,7 @@ def _kartica_instrukcije(sheet, nastavnik, smije_gotovinu):
             else:
                 status = "Održan"
             c1, c2, c3 = st.columns(3)
-            datum = c1.date_input("Datum", value=date.today(), format="DD.MM.YYYY")
+            datum = c1.date_input("Datum", value=sada_zagreb().date(), format="DD.MM.YYYY")
             vrijeme = c2.text_input("Vrijeme (npr. 17:00)") if ima_status else ""
             duljina = c3.selectbox("Duljina termina (min)", options=INSTRUKCIJE_TRAJANJA, index=1)
             c4, c5 = st.columns(2)
@@ -758,7 +788,8 @@ def _kartica_dostupnost(sheet, nastavnik):
     try:
         razdoblja, praznici = _razdoblja_i_praznici()
         blokovi = _danas.moji_blokovi(_ucitaj("Grupe"), _ucitaj(naziv_taba_rasporeda_mature(SEZONA)),
-                                      razdoblja, praznici, nastavnik)
+                                      razdoblja, praznici, nastavnik,
+                                      _ucitaj(BLOKOVI_TAB))
         for w in _dost.preklapanja_s_grupama(redovi, blokovi):
             st.warning("⚠ " + w)
     except Exception:
@@ -782,7 +813,7 @@ def _kartica_danas(nastavnik):
     danas = sada_zagreb().date()
     razdoblja, praznici = _razdoblja_i_praznici()
     blokovi = _danas.moji_blokovi(_ucitaj("Grupe"), _ucitaj(naziv_taba_rasporeda_mature(SEZONA)),
-                                  razdoblja, praznici, nastavnik)
+                                  razdoblja, praznici, nastavnik, _ucitaj(BLOKOVI_TAB))
     df_termini = _ucitaj("Termini")
     sati = _danas.danasnji_sati(blokovi, df_termini, danas, praznici)
     kasne = _danas.nezabiljezeni_sati(blokovi, df_termini, danas, praznici)
@@ -862,6 +893,171 @@ def _razdoblja_i_praznici():
     return ucitaj_razdoblja(sheet), ucitaj_praznike(sheet)
 
 
+def _kartica_blokovi(sheet, nastavnik):
+    """🧩 Moji blokovi (18.10.2026.) — višepredmetni termini (npr. PRELOG: BIO/FIZ/KEM). Admin u
+    adminu otvori datume i upiše predmet po bloku, a profesor OVDJE preuzme one koje drži.
+    Vidi samo blokove svojih predmeta (Nastavnici.predmeti; prazno = vidi sve — isto pravilo kao
+    kod Mature). Preuzet blok čini grupu "mojom" u ✅ Dolasci i kad nisam njezin redovni nastavnik."""
+    st.caption("Termini s više predmeta (npr. PRELOG: BIO, FIZ, KEM). Admin otvori datume i predmete, "
+               "a vi preuzmete blokove koje držite. Preuzeti blok se pojavi u ✅ Dolasci.")
+    df_b = _ucitaj(BLOKOVI_TAB)
+    if df_b is None or df_b.empty:
+        st.info("Još nema otvorenih blokova. Javite se adminu ako očekujete raspored.")
+        return
+    df_g = _ucitaj("Grupe")
+    grupe = {str(g["grupa_id"]): g for _, g in df_g.iterrows()} if df_g is not None and not df_g.empty else {}
+    predmeti_prof = predmeti_nastavnika(_ucitaj("Nastavnici"), nastavnik)
+    danas = sada_zagreb().date()
+
+    def _opis(b):
+        g = grupe.get(b["grupa_id"], {})
+        uc = naziv_ucionice_centra(oznaka_ucionice(g.get("ucionica", "")))
+        program = str(g.get("program", "") or b["grupa_id"])
+        return (f"**{b['datum']:%d.%m.%Y.}** ({DANI_U_TJEDNU[b['datum'].weekday()][:3]}) · {b['vrijeme']} · "
+                f"**{b['predmet']}** · {program}" + (f" · {uc}" if uc else ""))
+
+    moji = [b for b in blokovi_nastavnika(df_b, nastavnik) if b["datum"] and b["datum"] >= danas]
+    st.markdown(f"#### ⭐ Moji blokovi ({len(moji)})")
+    if not moji:
+        st.caption("Nemate preuzetih blokova koji tek dolaze.")
+    for b in moji:
+        c1, c2 = st.columns([4, 1])
+        c1.markdown(_opis(b))
+        if c2.button("Odjavi se", key=f"blok_off_{b['blok_id']}",
+                     help="Blok se vraća među slobodne — javite adminu da zna."):
+            try:
+                otpusti_blok(sheet, b["blok_id"], nastavnik)
+                _poruka("success", "Blok je otpušten.")
+            except ValueError as e:
+                _poruka("warning", str(e))
+            st.cache_data.clear()
+            st.rerun()
+
+    slobodni = slobodni_blokovi(df_b, predmeti_prof, danas)
+    st.markdown(f"#### 🆓 Slobodni blokovi ({len(slobodni)})")
+    if not slobodni:
+        st.caption("Trenutno nema slobodnih blokova za vaše predmete." if predmeti_prof
+                   else "Trenutno nema slobodnih blokova.")
+    for b in slobodni:
+        c1, c2 = st.columns([4, 1])
+        c1.markdown(_opis(b))
+        if c2.button("Preuzimam", key=f"blok_on_{b['blok_id']}", type="primary"):
+            try:
+                preuzmi_blok(sheet, b["blok_id"], nastavnik)
+                _poruka("success", f"Preuzeli ste blok {b['datum']:%d.%m.} {b['vrijeme']} ({b['predmet']}).")
+            except ValueError as e:
+                _poruka("warning", str(e))
+            st.cache_data.clear()
+            st.rerun()
+
+
+def _slobodne_ucionice(datum, vrijeme, bez_najma=""):
+    """Oznake učionica koje su u to vrijeme SLOBODNE. Zauzetu nitko ne može upisati (odluka
+    18.10.2026.) — provjera ide kroz istu logiku preklapanja kao kod grupa."""
+    razdoblja, praznici = _razdoblja_i_praznici()
+    blokovi = [b for b in blokovi_zauzetosti(_ucitaj("Grupe"),
+                                             _ucitaj(naziv_taba_rasporeda_mature(SEZONA)),
+                                             razdoblja, praznici, _ucitaj(NAJAM_TAB))
+               if not (b["izvor"] == "NAJAM" and b["id"] == bez_najma)]
+    slobodne = []
+    for oznaka, _naziv, _kap in UCIONICE_CENTRA:
+        dan = DANI_U_TJEDNU[datum.weekday()]
+        kandidat = blok_iz_unosa_grupe("", dan, vrijeme, opcija_ucionice_upisi(oznaka),
+                                       "NAJAM", "", datum, 1, praznici)
+        if not provjeri_grupu_upisa(kandidat, blokovi):
+            slobodne.append(oznaka)
+    return slobodne
+
+
+def _kartica_najam(sheet, nastavnik):
+    """🔑 Moji termini (18.10.2026.) — za suradnike na modelu najma (npr. Slađana). Upisuju SAMO
+    svoj termin: datum, vrijeme i slobodnu učionicu. Nema učenika, dodjela, honorara ni financija
+    — sustav ne vodi njihove klijente, samo zauzetost prostora i broj odrađenih termina."""
+    st.caption("Upišite termin u kojem koristite učionicu. Zauzete učionice se ne mogu odabrati. "
+               "Termin se vidi u pregledu zauzetosti i u kalendaru centra, pa vas nitko ne može "
+               "prebukirati.")
+    danas = sada_zagreb().date()
+    with st.container(border=True):
+        st.markdown("**➕ Novi termin**")
+        n1, n2 = st.columns(2)
+        n_datum = n1.date_input("Datum", value=danas, format="DD.MM.YYYY", key="naj_datum")
+        n_vrijeme = n2.text_input("Vrijeme (početak-kraj, npr. 17:00-18:30)", key="naj_vrijeme")
+        if n_vrijeme and je_ispravno_vrijeme(n_vrijeme):
+            slobodne = _slobodne_ucionice(n_datum, n_vrijeme)
+            if slobodne:
+                n_uc = st.radio("Slobodne učionice", slobodne, horizontal=True, key="naj_uc",
+                                format_func=lambda o: naziv_ucionice_centra(o))
+                n_nap = st.text_input("Napomena (nije obavezno)", key="naj_nap")
+                if st.button("💾 Upiši termin", type="primary", key="naj_upisi"):
+                    try:
+                        upisi_najam(sheet, nastavnik, n_datum, n_vrijeme,
+                                    opcija_ucionice_upisi(n_uc), n_nap)
+                        _poruka("success", f"Termin upisan: {n_datum:%d.%m.} {n_vrijeme}, "
+                                           f"{naziv_ucionice_centra(n_uc)}.")
+                    except ValueError as e:
+                        _poruka("warning", str(e))
+                    st.cache_data.clear()
+                    st.rerun()
+            else:
+                st.warning("U to vrijeme nema slobodne učionice. Probajte drugo vrijeme ili datum.")
+        elif n_vrijeme:
+            st.info("Upišite vrijeme s početkom i krajem, npr. **17:00-18:30**.")
+
+    moji = najam_termini(_ucitaj(NAJAM_TAB), nastavnik)
+    nadolaze = [n for n in moji if n["datum"] >= danas]
+    st.markdown(f"#### 📅 Moji termini koji dolaze ({len(nadolaze)})")
+    if not nadolaze:
+        st.caption("Nema upisanih termina koji tek dolaze.")
+    for n in nadolaze:
+        c1, c2 = st.columns([4, 1])
+        c1.markdown(f"**{n['datum']:%d.%m.%Y.}** ({DANI_U_TJEDNU[n['datum'].weekday()][:3]}) · "
+                    f"{n['vrijeme']} · {naziv_ucionice_centra(n['ucionica'])}"
+                    + (f" · _{n['napomena']}_" if n["napomena"] else ""))
+        if c2.button("Otkaži", key=f"naj_otkazi_{n['najam_id']}"):
+            try:
+                otkazi_najam(sheet, n["najam_id"], nastavnik)
+                _poruka("success", "Termin je otkazan — učionica je slobodna.")
+            except ValueError as e:
+                _poruka("warning", str(e))
+            st.cache_data.clear()
+            st.rerun()
+
+    sazetak = [x for x in najam_sazetak(_ucitaj(NAJAM_TAB), danas.year, danas.month)
+               if x["profesor"] == nastavnik]
+    if sazetak:
+        st.markdown("#### 📊 Ovaj mjesec")
+        st.caption(f"Održanih termina: **{sazetak[0]['termina']}** · ukupno **{sazetak[0]['sati']} h**. "
+                   "Obračun naknade radi CAKI centar odvojeno.")
+
+
+def _otkazivanje_termina(sheet, nastavnik, grupa_id, datum, naziv_termina=""):
+    """🚫 Otkazivanje jednog datuma grupnog termina — iz portala smije profesor koji ga drži
+    (odluka 18.10.2026.). Kvačica odlučuje hoće li se termin nadoknaditi na kraju serije."""
+    otkazani = otkazani_po_kljucu(_ucitaj("Otkazani_termini"))
+    vec = otkazani.get((str(grupa_id), datum))
+    if vec:
+        st.info(f"🚫 Taj termin je otkazan"
+                + (f" — {vec['razlog']}" if vec["razlog"] else "")
+                + (" (nadoknađuje se na kraju)" if vec["nadoknadi"] else " (bez nadoknade)")
+                + (f" · otkazao: {vec['otkazao']}" if vec["otkazao"] else ""))
+        return True
+    with st.expander("🚫 Otkaži ovaj termin"):
+        st.caption("Otkazani termin izlazi iz kalendara i učionica se oslobodi. Admin to vidi.")
+        razlog = st.text_input("Razlog (vidi ga admin)", key=f"otk_razlog_{grupa_id}_{datum}")
+        nadoknadi = st.checkbox("Nadoknadi na kraju (serija se produži za tjedan)", value=True,
+                                key=f"otk_nad_{grupa_id}_{datum}")
+        if st.button("🚫 Otkaži termin", key=f"otk_gumb_{grupa_id}_{datum}"):
+            try:
+                otkazi_termin(sheet, grupa_id, datum, razlog, nadoknadi, nastavnik)
+                _poruka("success", f"Termin {datum:%d.%m.} je otkazan"
+                                   + (" (nadoknada na kraju)." if nadoknadi else "."))
+            except ValueError as e:
+                _poruka("warning", str(e))
+            st.cache_data.clear()
+            st.rerun()
+    return False
+
+
 def _kartica_zauzetost():
     """Tjedni pregled zauzetosti učionica — samo "ZAUZETO", bez detalja (2.10.2026.)."""
     st.caption("Kad su učionice zauzete grupama (Matura, Upisi). **Grupe imaju prednost** — instrukcije u "
@@ -871,36 +1067,60 @@ def _kartica_zauzetost():
     pon = ponedjeljak_tjedna(dan)
     st.caption(f"Tjedan {pon:%d.%m.} – {pon + timedelta(days=6):%d.%m.%Y.}")
     razdoblja, praznici = _razdoblja_i_praznici()
-    blokovi = blokovi_zauzetosti(_ucitaj("Grupe"), _ucitaj(naziv_taba_rasporeda_mature(SEZONA)), razdoblja, praznici)
+    blokovi = blokovi_zauzetosti(_ucitaj("Grupe"), _ucitaj(naziv_taba_rasporeda_mature(SEZONA)),
+                                 razdoblja, praznici, _ucitaj(NAJAM_TAB))
     st.markdown(html_tjedne_mreze(blokovi, pon, javno=True, praznici=praznici), unsafe_allow_html=True)
 
 
-KALENDAR_CENTRA_ID = ("c_8470d1f97dcaa6569bd507e994dd08ea57676651b41aa9c0561c6d493efe9f72"
-                      "@group.calendar.google.com")
+# 17.10.2026.: kalendari koje portal može prikazati. DODAVANJE NOVOG = jedan red ovdje.
+# ID kalendara se nađe u Google kalendaru: Postavke (⚙) → odaberi kalendar u lijevom stupcu →
+# odjeljak "Integriraj kalendar" → polje "ID kalendara". Prvi u popisu je zadani prikaz.
+KALENDARI_PORTALA = [
+    ("🏫 Administracija CAKI centar", "c_classroom6d7434b5@group.calendar.google.com"),
+]
 KALENDAR_PRAZNICI_ID = "hr.croatian.official#holiday@group.v.calendar.google.com"
 
 
-def _kalendar_url(nacin: str = "WEEK") -> str:
-    """Ugradni (embed) URL dijeljenog kalendara centra, isti kalendar koji je na web stranici."""
+def _kalendar_url(kalendar_id: str, nacin: str = "WEEK") -> str:
+    """Ugradni (embed) URL jednog kalendara + hrvatski praznici kao sloj preko njega."""
     def b64(x):
         return base64.b64encode(x.encode()).decode()
     return ("https://calendar.google.com/calendar/embed?height=650&wkst=2"
             f"&ctz=Europe%2FZagreb&mode={nacin}"
-            f"&src={b64(KALENDAR_CENTRA_ID)}&color=%23009688"
+            f"&src={b64(kalendar_id)}&color=%23009688"
             f"&src={b64(KALENDAR_PRAZNICI_ID)}")
 
 
 def _kartica_kalendar():
-    """17.10.2026.: prikaz dijeljenog Google kalendara centra u portalu — SAMO ZA GLEDANJE.
-    Uređivanje ide u samom Google kalendaru (profesor mora biti prijavljen na Google račun koji
-    ima pristup kalendaru). Raspored i zauzetost učionica se NE vode odavde nego iz CRM-a —
-    kalendar je pregled, a mjerodavna je kartica 🏫 Zauzetost učionica."""
-    st.caption("Dijeljeni kalendar centra (isti koji je na web stranici). Ovdje je **samo za "
-               "gledanje** — za uređivanje otvorite kalendar u Googleu. Mjerodavna zauzetost "
-               "učionica je u kartici 🏫 Zauzetost učionica.")
+    """17.10.2026.: prikaz Google kalendara centra u portalu — SAMO ZA GLEDANJE.
+    Uređivanje ide u samom Google kalendaru. Raspored i zauzetost učionica se NE vode odavde
+    nego iz CRM-a — kalendar je pregled, a mjerodavna je kartica 🏫 Zauzetost učionica.
+
+    VAŽNO o pristupu: ugradnja (iframe) prikazuje kalendar samo ako je kalendar javno dijeljen
+    ILI ako je profesor u tom istom pregledniku prijavljen na Google račun koji ima pristup
+    kalendaru. Administracijski kalendar nije javan, pa profesor koji nije prijavljen vidi
+    Googleovu poruku o pristupu — zato je ispod i gumb za otvaranje u Google kalendaru."""
+    st.caption("Kalendar **Administracija CAKI centar** — raspored slobodnih učionica i "
+               "organizacija nastave. Ovdje je **samo za gledanje**; za uređivanje otvorite "
+               "kalendar u Googleu. Mjerodavna zauzetost grupa je u kartici 🏫 Zauzetost učionica.")
+    # Samo jedan kalendar (odluka 17.10.2026.: "Administracija CAKI centar" je uvijek najaktualniji),
+    # pa se birač ne prikazuje. Doda li se drugi red u KALENDARI_PORTALA, birač se pojavi sam.
+    if len(KALENDARI_PORTALA) > 1:
+        kalendar_id = dict(KALENDARI_PORTALA)[st.selectbox(
+            "Kalendar", [n for n, _i in KALENDARI_PORTALA], key="kal_koji")]
+    else:
+        kalendar_id = KALENDARI_PORTALA[0][1]
     nacin = st.radio("Prikaz", ["WEEK", "AGENDA", "MONTH"], horizontal=True, key="kal_nacin",
                      format_func={"WEEK": "Tjedan", "AGENDA": "Popis", "MONTH": "Mjesec"}.get)
-    _components.iframe(_kalendar_url(nacin), height=650, scrolling=True)
+    # st.components.v1.iframe je najavljen za uklanjanje poslije 1.6.2026.; st.iframe je novi
+    # naziv. Podržavamo oba da kartica ne pukne ni na staroj ni na novoj verziji Streamlita.
+    url_kal = _kalendar_url(kalendar_id, nacin)
+    try:
+        st.iframe(url_kal, height=650)
+    except AttributeError:
+        _components.iframe(url_kal, height=650, scrolling=True)
+    st.caption("Ako kalendar piše da nemate pristup: prijavite se u ovom pregledniku na Google "
+               "račun kojem je kalendar podijeljen, pa osvježite stranicu.")
     st.link_button("↗ Otvori u Google kalendaru", "https://calendar.google.com/calendar/r")
 
 
@@ -922,12 +1142,25 @@ def prikazi_portal_profesora():
     if "_prof_poruka" in st.session_state:
         vrsta, tekst = st.session_state.pop("_prof_poruka")
         getattr(st, vrsta)(tekst)
+    # 18.10.2026.: suradnik na modelu najma (npr. Slađana) vidi SAMO svoje termine i zauzetost —
+    # nema pristup učenicima, dodjelama, instrukcijama ni financijama (Cakijeva odluka).
+    if je_najmoprimac(_ucitaj(PROFILI_PROFESORA_TAB), nastavnik):
+        k_naj, k_zau_n, k_kal_n = st.tabs(["🔑 Moji termini", "🏫 Zauzetost učionica",
+                                           "📅 Kalendar centra"])
+        with k_naj:
+            _kartica_najam(sheet, nastavnik)
+        with k_zau_n:
+            _kartica_zauzetost()
+        with k_kal_n:
+            _kartica_kalendar()
+        return
+
     smije_gotovinu = smije_naplatu_gotovinom(_ucitaj("Nastavnici"), nastavnik)
     n_upita = _broj_neodgovorenih_upita(nastavnik)
-    (k_dan, k_upiti, k_dost, k_dol, k_mat, k_instr, k_uc, k_izv, k_zau,
+    (k_dan, k_upiti, k_dost, k_dol, k_blok, k_mat, k_instr, k_uc, k_izv, k_zau,
      k_kal) = st.tabs([
         "🏠 Danas", f"📥 Novi upiti ({n_upita})" if n_upita else "📥 Novi upiti", "🗓️ Dostupnost",
-        "✅ Dolasci — grupe", "🎓 Matura",
+        "✅ Dolasci — grupe", "🧩 Moji blokovi", "🎓 Matura",
         "📝 Instrukcije", "👩‍🎓 Moji učenici", "📄 Mjesečni izvještaj", "🏫 Zauzetost učionica",
         "📅 Kalendar centra"])
     with k_dan:
@@ -938,6 +1171,8 @@ def prikazi_portal_profesora():
         _kartica_dostupnost(sheet, nastavnik)
     with k_dol:
         _kartica_dolasci(sheet, nastavnik)
+    with k_blok:
+        _kartica_blokovi(sheet, nastavnik)
     with k_mat:
         _kartica_matura(sheet, nastavnik)
     with k_instr:

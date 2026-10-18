@@ -14,6 +14,8 @@ from pipeline_upisi import (
     DANI_U_TJEDNU,
     ROK_PROFESOR_DANA,
     blok_aktivan_na_datum,
+    blokovi_nastavnika,
+    program_ima_blokove,
     lijepo_vrijeme,
     matura_kante,
     razdoblje_grupe_upisa,
@@ -36,14 +38,23 @@ def _termin_zabiljezen(df_termini: pd.DataFrame, grupa_id: str, d: date) -> bool
     return not t.empty
 
 
-def moji_blokovi(df_grupe, df_raspored_matura, razdoblja: dict, praznici: dict, nastavnik: str) -> list:
-    """Tjedni blokovi (Upisi grupe + Matura kante) u kojima je profesor upisan kao redovni.
-    [{izvor, grupa_id, dan, vrijeme, minute, naziv, ucionica, od, do}]"""
+def moji_blokovi(df_grupe, df_raspored_matura, razdoblja: dict, praznici: dict, nastavnik: str,
+                 df_blokovi=None) -> list:
+    """Tjedni blokovi (Upisi grupe + Matura kante) u kojima je profesor upisan kao redovni, PLUS
+    pojedini blokovi višepredmetnih termina (PRELOG) koje drži (18.10.2026.).
+    [{izvor, grupa_id, dan, vrijeme, minute, naziv, ucionica, od, do}]
+
+    Kod višepredmetnog programa jedan profesor ne drži cijeli termin nego pojedini blok na
+    pojedini datum, pa se tjedni zapis grupe PRESKAČE kad za nju postoje upisani blokovi —
+    inače bi se isti datum pojavio dvaput, i to s pogrešnim predmetom."""
     out = []
+    s_blokovima = {b["grupa_id"] for b in blokovi_nastavnika(df_blokovi, nastavnik)} if nastavnik else set()
     if df_grupe is not None and not df_grupe.empty and "dan" in df_grupe.columns:
         for _, g in df_grupe.iterrows():
             if _tekst(g.get("aktivna")).lower() != "da":
                 continue
+            if program_ima_blokove(g.get("program")) and _tekst(g.get("grupa_id")) in s_blokovima:
+                continue          # taj termin je opisan blokovima, niže
             if _tekst(g.get("redovni_nastavnik")) != nastavnik:
                 continue
             od, do, _ = razdoblje_grupe_upisa(g, razdoblja, praznici)
@@ -57,6 +68,21 @@ def moji_blokovi(df_grupe, df_raspored_matura, razdoblja: dict, praznici: dict, 
         out.append({"izvor": "Matura", "grupa_id": k["grupa_id"], "dan": k["dan"],
                     "vrijeme": lijepo_vrijeme(k["vrijeme"]), "minute": vrijeme_u_minute(k["vrijeme"]) or (0, 0),
                     "naziv": " + ".join(k["predmeti"]) or "Matura", "ucionica": k["ucionica"], "od": od, "do": do})
+    # Blokovi višepredmetnih termina: razdoblje je točno taj jedan datum, pa ih sati_na_datum()
+    # pokaže samo tada, bez ikakve nove logike.
+    grupe_po_id = {}
+    if df_grupe is not None and not df_grupe.empty and "grupa_id" in df_grupe.columns:
+        grupe_po_id = {_tekst(g.get("grupa_id")): g for _, g in df_grupe.iterrows()}
+    for b in blokovi_nastavnika(df_blokovi, nastavnik):
+        if not b["datum"]:
+            continue
+        g = grupe_po_id.get(b["grupa_id"], {})
+        naziv = (_tekst(g.get("program")) + " " + b["predmet"]).strip() if len(g) else b["predmet"]
+        out.append({"izvor": "Upisi", "grupa_id": b["grupa_id"],
+                    "dan": DANI_U_TJEDNU[b["datum"].weekday()], "vrijeme": b["vrijeme"],
+                    "minute": vrijeme_u_minute(b["vrijeme"]) or (0, 0), "naziv": naziv,
+                    "ucionica": _tekst(g.get("ucionica")) if len(g) else "",
+                    "od": b["datum"], "do": b["datum"]})
     return out
 
 
