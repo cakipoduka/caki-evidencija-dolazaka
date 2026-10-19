@@ -38,6 +38,11 @@ ODGOVOR_PREUZIMAM, ODGOVOR_NE_MOGU = "Preuzimam", "Ne mogu"
 ODGOVOR_DODIJELJENO, ODGOVOR_NIJE_ODABRAN = "Dodijeljeno", "Nije odabran"
 ODGOVORI_PROFESORA = (ODGOVOR_PREUZIMAM, ODGOVOR_NE_MOGU)
 ZATVORENI_STATUSI_POZIVA = ("Odustao", "Otkazano")
+# 20.10.2026. (Cakijev zahtjev): upit stariji od mjesec dana NIJE novi upit — ne prikazuje se ni adminu
+# ni profesorima u popisu novih (stare prijave iz prošlih godina i uvezeni kontakti su ih zatrpavali).
+# Admin ih vidi u zasebnom prikazu „🗄️ Stariji od 30 dana" i dalje može dodijeliti profesora.
+# Prijava bez datuma se smatra starom (uvoz, ručni unos bez datuma).
+UPIT_MAX_DANA = 30
 
 # Nastavnici.predmeti sadrži oznake poput MAT-A, FIZ, KEM; upit ima slobodan naziv (Matematika, Fizika…)
 PREFIKSI_PREDMETA = {"MAT": "matemat", "FIZ": "fiz", "KEM": "kemij", "BIO": "biolog", "HRV": "hrvat",
@@ -60,11 +65,14 @@ def predmet_odgovara(predmeti_prof: list, predmet: str) -> bool:
     return False
 
 
-def otvoreni_upiti(df_prijave: pd.DataFrame, df_dodjele: pd.DataFrame, danas: date, sezona: str = "") -> list:
+def otvoreni_upiti(df_prijave: pd.DataFrame, df_dodjele: pd.DataFrame, danas: date, sezona: str = "",
+                   max_dana: int | None = UPIT_MAX_DANA, samo_stari: bool = False) -> list:
     """Upiti za instrukcije koje još nitko nije preuzeo u dodjelu. [{redak_id, ucenik_id, ime_djeteta, predmet,
     stupanj, oblik, napomena, stiglo (date|None), dana}] — najstariji prvi.
     Otvoren = program_tip Instrukcije, poziv nije Odustao/Otkazano, nema aktivne dodjele za isti predmet
-    (dodjela bez predmeta pokriva sve predmete učenika)."""
+    (dodjela bez predmeta pokriva sve predmete učenika).
+    20.10.2026.: `max_dana` (zadano 30) odbacuje upite starije od toga i one bez datuma;
+    `samo_stari=True` vraća upravo njih (za adminov prikaz „🗄️ Stariji"). `max_dana=None` = svi."""
     if df_prijave is None or df_prijave.empty or "program_tip" not in df_prijave.columns:
         return []
     dodjele = aktivne_dodjele(df_dodjele, danas)
@@ -83,6 +91,10 @@ def otvoreni_upiti(df_prijave: pd.DataFrame, df_dodjele: pd.DataFrame, danas: da
         if (uid, predmet.lower()) in pokriveno or (uid, "") in pokriveno:
             continue
         stiglo = _datum(r.get("timestamp_prijave"))
+        if max_dana is not None:
+            star = stiglo is None or (danas - stiglo).days > max_dana
+            if star != samo_stari:
+                continue
         out.append({"redak_id": _t(r.get("redak_id")), "ucenik_id": uid, "ime_djeteta": _t(r.get("ime_djeteta")),
                     "predmet": predmet, "stupanj": _t(r.get("stupanj_skolovanja")), "oblik": _t(r.get("oblik_instrukcija")),
                     "napomena": _t(r.get("napomena")), "stiglo": stiglo,

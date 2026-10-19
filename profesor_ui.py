@@ -35,8 +35,9 @@ Privatnost: profesor NIKAD ne vidi cijene, iznose ni ponude. Vidi samo svoje ins
 termin plaćen (✅). Naplatu gotovinom smije evidentirati samo profesor s ovlaštenjem
 (Nastavnici.naplata_gotovinom = Da, postavlja admin).
 """
-import base64
+import base64   # noqa: F401  (ostaje — koristi se u drugim dijelovima portala)
 import json
+import urllib.parse
 from datetime import date, timedelta
 
 import streamlit.components.v1 as _components
@@ -1082,13 +1083,18 @@ KALENDAR_PRAZNICI_ID = "hr.croatian.official#holiday@group.v.calendar.google.com
 
 
 def _kalendar_url(kalendar_id: str, nacin: str = "WEEK") -> str:
-    """Ugradni (embed) URL jednog kalendara + hrvatski praznici kao sloj preko njega."""
-    def b64(x):
-        return base64.b64encode(x.encode()).decode()
+    """Ugradni (embed) URL jednog kalendara + hrvatski praznici kao sloj preko njega.
+
+    ⚠️ 20.10.2026. — ISPRAVAK Googleove greške „400. To je pogreška.”: `embed?src=` prima OBIČAN
+    ID kalendara, samo percent-kodiran (`@` → %40, `#` → %23). Base64 (koji je ovdje bio) koristi
+    se isključivo u starom obliku `calendar/render?cid=…`; u `src=` ga Google odbija s 400.
+    Zato: urllib.parse.quote sa safe="" (bez toga `#` u ID-u praznika reže URL)."""
+    def q(x):
+        return urllib.parse.quote(x, safe="")
     return ("https://calendar.google.com/calendar/embed?height=650&wkst=2"
             f"&ctz=Europe%2FZagreb&mode={nacin}"
-            f"&src={b64(kalendar_id)}&color=%23009688"
-            f"&src={b64(KALENDAR_PRAZNICI_ID)}")
+            f"&src={q(kalendar_id)}&color=%23009688"
+            f"&src={q(KALENDAR_PRAZNICI_ID)}")
 
 
 def _kartica_kalendar():
