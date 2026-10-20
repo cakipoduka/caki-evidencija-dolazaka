@@ -115,6 +115,8 @@ from pipeline_upisi import (
     get_gspread_client,
     izvjestaj_instruktora,
     load_izvjestaji,
+    PROGRAMI_NASTAVNIKA,
+    nastavnik_radi_program,
     nastavnici_aktivni,   # noqa: F401  (ostaje za ostale dijelove portala)
     nastavnik_po_prijavi,
     oznaci_naplatu_gotovinom,
@@ -1247,33 +1249,34 @@ def prikazi_portal_profesora():
             _kartica_kalendar()
         return
 
-    smije_gotovinu = smije_naplatu_gotovinom(_ucitaj("Nastavnici"), nastavnik)
+    df_n_prog = _ucitaj("Nastavnici")
+    smije_gotovinu = smije_naplatu_gotovinom(df_n_prog, nastavnik)
     n_upita = _broj_neodgovorenih_upita(nastavnik)
-    (k_dan, k_upiti, k_dost, k_dol, k_blok, k_mat, k_instr, k_uc, k_izv, k_zau,
-     k_kal) = st.tabs([
-        "🏠 Danas", f"📥 Novi upiti ({n_upita})" if n_upita else "📥 Novi upiti", "🗓️ Dostupnost",
-        "✅ Dolasci — grupe", "🧩 Moji blokovi", "🎓 Matura",
-        "📝 Instrukcije", "👩‍🎓 Moji učenici", "📄 Mjesečni izvještaj", "🏫 Zauzetost učionica",
-        "📅 Kalendar centra"])
-    with k_dan:
-        _kartica_danas(nastavnik)
-    with k_upiti:
-        _kartica_upiti(sheet, nastavnik)
-    with k_dost:
-        _kartica_dostupnost(sheet, nastavnik)
-    with k_dol:
-        _kartica_dolasci(sheet, nastavnik)
-    with k_blok:
-        _kartica_blokovi(sheet, nastavnik)
-    with k_mat:
-        _kartica_matura(sheet, nastavnik)
-    with k_instr:
-        _kartica_instrukcije(sheet, nastavnik, smije_gotovinu)
-    with k_uc:
-        _kartica_moji_ucenici(nastavnik)
-    with k_izv:
-        _kartica_izvjestaj(sheet, nastavnik)
-    with k_zau:
-        _kartica_zauzetost()
-    with k_kal:
-        _kartica_kalendar()
+    # 21.10.2026. (Cakijev zahtjev): profesor može predavati više programa (Matura + Instrukcije + Upisi).
+    # Vidi samo kartice svojih programa; prazan stupac Nastavnici.programi = vidi sve, kao dosad.
+    radi = {p_: nastavnik_radi_program(df_n_prog, nastavnik, p_) for p_ in PROGRAMI_NASTAVNIKA}
+    naziv_upiti = f"📥 Novi upiti ({n_upita})" if n_upita else "📥 Novi upiti"
+    redom = [("🏠 Danas", _kartica_danas, True)]
+    if radi["Instrukcije"]:
+        redom += [(naziv_upiti, _kartica_upiti, True), ("🗓️ Dostupnost", _kartica_dostupnost, True)]
+    if radi["Upisi"]:
+        redom += [("✅ Dolasci — grupe", _kartica_dolasci, True), ("🧩 Moji blokovi", _kartica_blokovi, True)]
+    if radi["Matura"]:
+        redom += [("🎓 Matura", _kartica_matura, True)]
+    if radi["Instrukcije"]:
+        redom += [("📝 Instrukcije", _kartica_instrukcije, True),
+                  ("👩‍🎓 Moji učenici", _kartica_moji_ucenici, True)]
+    redom += [("📄 Mjesečni izvještaj", _kartica_izvjestaj, True),
+              ("🏫 Zauzetost učionica", _kartica_zauzetost, True),
+              ("📅 Kalendar centra", _kartica_kalendar, True)]
+    kartice_p = dict(zip([n_ for n_, _f, _a in redom], st.tabs([n_ for n_, _f, _a in redom])))
+    for naziv_k, funkcija_k, _aktivna in redom:
+        with kartice_p[naziv_k]:
+            if funkcija_k is _kartica_instrukcije:
+                funkcija_k(sheet, nastavnik, smije_gotovinu)
+            elif funkcija_k in (_kartica_danas, _kartica_moji_ucenici):
+                funkcija_k(nastavnik)
+            elif funkcija_k in (_kartica_zauzetost, _kartica_kalendar):
+                funkcija_k()
+            else:
+                funkcija_k(sheet, nastavnik)
