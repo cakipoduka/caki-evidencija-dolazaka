@@ -115,7 +115,8 @@ from pipeline_upisi import (
     get_gspread_client,
     izvjestaj_instruktora,
     load_izvjestaji,
-    nastavnici_aktivni,
+    nastavnici_aktivni,   # noqa: F401  (ostaje za ostale dijelove portala)
+    nastavnik_po_prijavi,
     oznaci_naplatu_gotovinom,
     posalji_izvjestaj_instruktora,
     pretrazi_ucenike,
@@ -223,14 +224,19 @@ def _prijava():
     if df_n.empty:
         st.error("Tab 'Nastavnici' još nije postavljen u Sheetu — javite adminu.")
         st.stop()
+    # 21.10.2026. (Cakijev zahtjev): nema padajuće liste imena — profesor sam upiše ime i prezime.
+    # Mala/velika slova, višak praznina i dijakritika se ne gledaju ("ivan horvat" = "Ivan Horvat").
     with st.form("prijava"):
-        ime = st.selectbox("Tko ste vi?", options=nastavnici_aktivni(df_n))
+        ime_upisano = st.text_input("Ime i prezime", placeholder="npr. Ivan Horvat",
+                                    help="Upišite ime i prezime kako vas je admin upisao u sustav.")
         lozinka = st.text_input("Vaša lozinka", type="password")
         if st.form_submit_button("Prijava", type="primary"):
-            if provjeri_lozinku_instruktora(df_n, ime, lozinka):
+            ime = nastavnik_po_prijavi(df_n, ime_upisano, lozinka)
+            if ime:
                 st.session_state["instruktor_prijavljen"] = ime
                 st.rerun()
-            st.error("Pogrešna lozinka.")
+            st.error("Ime i prezime ili lozinka nisu točni. Ako ste tek dobili pristup ili ne znate "
+                     "kako ste upisani, javite se adminu.")
     st.stop()
 
 
@@ -437,6 +443,25 @@ def _moji_ucenici(nastavnik) -> pd.DataFrame:
     return ucenici_profesora(_ucitaj(DODJELE_TAB), _ucitaj("Učenici"), nastavnik, sada_zagreb().date())
 
 
+def _opcije_ucenika(moji) -> dict:
+    """21.10.2026. (Cakijev zahtjev): u izborniku piše SAMO ime i prezime — šifra učenika se
+    profesoru više ne prikazuje. Ako dva učenika imaju isto ime, dodaje se predmet (pa škola),
+    a ako ni to ne razlikuje, broj — da izbornik nikad ne izgubi nijednog učenika."""
+    imena = [str(r.get("ime_djeteta", "")).strip() for _, r in moji.iterrows()]
+    opcije = {}
+    for (_, r), ime in zip(moji.iterrows(), imena):
+        oznaka = ime or str(r.get("ucenik_id", ""))
+        if imena.count(ime) > 1:
+            dodatak = str(r.get("predmet") or "").split(", ")[0] or str(r.get("skola") or "")
+            if dodatak:
+                oznaka = f"{ime} — {dodatak}"
+        osnovno, k = oznaka, 2
+        while oznaka in opcije:
+            oznaka, k = f"{osnovno} ({k})", k + 1
+        opcije[oznaka] = r
+    return opcije
+
+
 def _kartica_moji_ucenici(nastavnik):
     st.caption("Učenici koje vam je dodijelio admin. Kontakt vidite samo kad je dopušten (za prvi dogovor). "
                "Podatke ne prepisujte u privatni imenik i ne dijelite ih dalje.")
@@ -467,6 +492,38 @@ def _kartica_moji_ucenici(nastavnik):
                     st.dataframe(povijest, hide_index=True, width="stretch")
 
 
+# 21.10.2026. (Cakijev zahtjev): oblik plaćanja je obavezan na svakom upisu sata.
+PLACANJE_GOTOVINA = "💵 Gotovina"
+PLACANJE_NEPLACENO = "❌ Nije plaćeno"
+PLACANJE_OPCIJE = [PLACANJE_GOTOVINA, PLACANJE_NEPLACENO]
+NAPOMENA_GOTOVINA_NEOVLASTEN = "💵 Profesor javlja: plaćeno gotovinom — treba potvrda admina."
+
+
+def _oznaka_placanja(placanje, smije_gotovinu) -> str:
+    """Što ide u stupac placeno_oznaka_prof. Gotovinu smije zaključiti samo profesor s
+    ovlaštenjem; kod ostalih termin ostaje neplaćen dok admin ne potvrdi uplatu (tako jedan
+    pogrešan klik ne izbaci sat iz obračuna)."""
+    return PLACENO_GOTOVINOM if (placanje == PLACANJE_GOTOVINA and smije_gotovinu) else "Ne"
+
+
+def _napomena_s_gotovinom(napomena, placanje, smije_gotovinu) -> str:
+    if placanje == PLACANJE_GOTOVINA and not smije_gotovinu:
+        return (NAPOMENA_GOTOVINA_NEOVLASTEN + (" " + napomena if napomena else ""))[:1000]
+    return napomena
+
+
+def _sat_napomena_gotovina(sheet, termin_id, nastavnik):
+    """Zakazani termin prebačen u Održan, profesor javlja gotovinu bez ovlaštenja → zapiši to
+    adminu u internu napomenu (javna bilješka se ne dira)."""
+    df = _ucitaj("Instrukcije_termini")
+    red = df[df["termin_id"] == termin_id] if "termin_id" in df.columns else df.iloc[0:0]
+    stara = str(red.iloc[0].get("napomena_interna", "")) if not red.empty else ""
+    if NAPOMENA_GOTOVINA_NEOVLASTEN in stara:
+        return
+    uredi_biljesku_sata(sheet, termin_id, javna=str(red.iloc[0].get("napomena_javna", "")) if not red.empty else "",
+                        interna=_napomena_s_gotovinom(stara, PLACANJE_GOTOVINA, False), nastavnik=nastavnik)
+
+
 def _kartica_instrukcije(sheet, nastavnik, smije_gotovinu):
     df_instr = _ucitaj("Instrukcije_termini")
     ima_status = "status_termina" in df_instr.columns
@@ -476,7 +533,7 @@ def _kartica_instrukcije(sheet, nastavnik, smije_gotovinu):
         st.info("Nemate dodijeljenih učenika, pa ne možete upisati termin. Admin vas povezuje s učenikom "
                 "(👩‍🎓 Moji učenici). Javite se adminu.")
     else:
-        opcije = {f"{r['ime_djeteta']} ({r['ucenik_id']})": r for _, r in moji.iterrows()}
+        opcije = _opcije_ucenika(moji)
         u = opcije[st.selectbox("Učenik (samo vaši)", options=list(opcije), key="instr_ucenik")]
         uid, ime = u["ucenik_id"], u["ime_djeteta"]
         zadani_predmet = (u["predmet"].split(", ")[0] if u["predmet"] else "")
@@ -498,7 +555,14 @@ def _kartica_instrukcije(sheet, nastavnik, smije_gotovinu):
             stupanj = c5.selectbox("Stupanj školovanja", options=STUPNJEVI_SKOLOVANJA_INSTR, index=1)
             oblik = st.radio("Oblik", options=INSTRUKCIJE_OBLICI, horizontal=True)
             broj = st.number_input("Broj učenika u grupi (samo za grupu)", min_value=1, max_value=10, value=1)
-            gotovina = st.checkbox("💵 Naplaćeno gotovinom") if smije_gotovinu else False
+            # 21.10.2026. (Cakijev zahtjev): oblik plaćanja je OBAVEZAN — bez njega se sat ne sprema.
+            placanje = st.radio("Plaćanje (obavezno)", PLACANJE_OPCIJE, horizontal=True,
+                                index=None, key="instr_placanje",
+                                help="💵 Gotovina = učenik/roditelj je platio tebi na satu. "
+                                     "❌ Nije plaćeno = sat ide na obračun (ponuda/račun).")
+            if not smije_gotovinu:
+                st.caption("ℹ️ Ovlaštenje za naplatu gotovinom dodjeljuje admin. Ako označiš 💵 Gotovina, "
+                           "sat ide adminu na potvrdu i do tada se vodi kao neplaćen.")
             nap_jav = st.text_area("📒 Bilješka sa sata — što se radilo, domaća zadaća (vidi i roditelj)")
             nap_int = st.text_area("Napomena interna (vidite samo vi i admin)")
             teme_n, ocjena_n, zadaca_n = _polja_sata("novi", predmet, stupanj)
@@ -510,12 +574,18 @@ def _kartica_instrukcije(sheet, nastavnik, smije_gotovinu):
                     st.error("Zakazan termin mora biti danas ili kasnije.")
                 elif datum < danas - timedelta(days=ROK_PROFESOR_DANA):
                     st.error(f"Termin se može upisati najviše {ROK_PROFESOR_DANA} dana unatrag — za stariji se javite adminu.")
+                elif placanje is None and status not in _sat.STATUSI_BEZ_SATA:
+                    # 21.10.2026.: provjera plaćanja ide POSLIJE provjera datuma/statusa, da profesor
+                    # prvo vidi konkretniju grešku (npr. "budući termin može biti samo Zakazan").
+                    st.error("Označi oblik plaćanja (💵 Gotovina ili ❌ Nije plaćeno) — bez toga se sat "
+                             "ne može spremiti.")
                 else:
                     novi_id = dodaj_instrukciju_termin(
                         sheet, ucenik_id=uid, ime_djeteta=ime, nastavnik=nastavnik, datum=str(datum),
                         duljina_min=duljina, oblik=oblik, broj_ucenika_u_grupi=broj if oblik == "Grupa" else None,
-                        placeno_oznaka_prof=PLACENO_GOTOVINOM if gotovina else "Ne",
-                        napomena_interna=nap_int, napomena_javna=nap_jav, predmet=predmet, stupanj_skolovanja=stupanj,
+                        placeno_oznaka_prof=_oznaka_placanja(placanje, smije_gotovinu),
+                        napomena_interna=_napomena_s_gotovinom(nap_int, placanje, smije_gotovinu),
+                        napomena_javna=nap_jav, predmet=predmet, stupanj_skolovanja=stupanj,
                         status_termina=status, vrijeme=vrijeme)
                     if status not in _sat.STATUSI_BEZ_SATA and (teme_n or ocjena_n or zadaca_n):
                         try:
@@ -551,12 +621,22 @@ def _kartica_instrukcije(sheet, nastavnik, smije_gotovinu):
                                         key=f"zak_st_{t['termin_id']}")
                     bilj = k2.text_input("📒 Bilješka sa sata (vidi roditelj)", key=f"zak_b_{t['termin_id']}") \
                         if novi == "Održan" else None
+                    # 21.10.2026.: i kod zakazanog termina plaćanje je obavezno kad sat postaje održan.
+                    pl = st.radio("Plaćanje (obavezno)", PLACANJE_OPCIJE, horizontal=True, index=None,
+                                  key=f"zak_pl_{t['termin_id']}") if novi == "Održan" else None
                     if st.button("💾 Spremi", key=f"zak_s_{t['termin_id']}"):
-                        try:
-                            promijeni_status_termina(sheet, t["termin_id"], novi, biljeska=bilj, nastavnik=nastavnik)
-                            _poruka("success", f"{t['ime_djeteta']}: {OZNAKE_STATUSA_TERMINA[novi]}.")
-                        except ValueError as e:
-                            _poruka("error", str(e))
+                        if novi == "Održan" and pl is None:
+                            _poruka("error", "Označi oblik plaćanja (💵 Gotovina ili ❌ Nije plaćeno).")
+                        else:
+                            try:
+                                promijeni_status_termina(
+                                    sheet, t["termin_id"], novi, biljeska=bilj, nastavnik=nastavnik,
+                                    placanje=_oznaka_placanja(pl, smije_gotovinu) if pl else None)
+                                if pl == PLACANJE_GOTOVINA and not smije_gotovinu:
+                                    _sat_napomena_gotovina(sheet, t["termin_id"], nastavnik)
+                                _poruka("success", f"{t['ime_djeteta']}: {OZNAKE_STATUSA_TERMINA[novi]}.")
+                            except ValueError as e:
+                                _poruka("error", str(e))
                         st.cache_data.clear()
                         st.rerun()
 
@@ -1140,9 +1220,15 @@ def prikazi_portal_profesora():
     _siri_stranicu()
     sheet = _init_sheet()
     nastavnik = _prijava()
-    c1, c2 = st.columns([4, 1])
+    c1, c2, c3 = st.columns([5, 1, 1])
     c1.title(f"🎓 {nastavnik}")
-    if c2.button("🚪 Odjava"):
+    # 21.10.2026. (Cakijev zahtjev): podaci se čitaju iz Sheeta kroz cache, pa promjena koju admin
+    # napravi dok je portal otvoren nije odmah vidljiva. Ovaj gumb isprazni cache i pročita Sheet.
+    if c2.button("🔄 Osvježi", help="Ponovno pročitaj podatke iz Sheeta (npr. admin ti je upravo "
+                                    "dodijelio učenika ili promijenio raspored)."):
+        st.cache_data.clear()
+        st.rerun()
+    if c3.button("🚪 Odjava"):
         st.session_state.pop("instruktor_prijavljen", None)
         st.rerun()
     if "_prof_poruka" in st.session_state:
