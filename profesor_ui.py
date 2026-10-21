@@ -50,6 +50,8 @@ import dostupnost_profesora as _dost
 import upiti_instrukcije as _upiti
 import sat_biljeska as _sat
 import komentar_napretka as _osvrt   # 21.10.2026.: ✍️ osvrt roditelju (baza fraza, bez AI-a)
+import komentar_ai as _ai            # 21.10.2026.: 🤖 „Sastavi ljepše" na iste fraze (opcionalno)
+import uputa_u_aplikaciji as _uputa  # 21.10.2026.: upute UNUTAR portala (sklopivi blok)
 
 from pipeline_upisi import (
     DODJELE_TAB,
@@ -253,6 +255,7 @@ def _prijava():
 # ------------------------------------------------------------------ ✅ dolasci
 
 def _kartica_dolasci(sheet, nastavnik):
+    _uputa.prikazi(st, "dolasci")
     # 18.10.2026.: sada_zagreb(), ne date.today() — server je u UTC-u, pa je profesor nakon
     # ponoći po našem vremenu dobivao prethodni dan i "nema aktivnih termina".
     odabrani_datum = st.date_input("Datum termina", value=sada_zagreb().date(),
@@ -356,6 +359,7 @@ def _kartica_dolasci(sheet, nastavnik):
 # ------------------------------------------------------------------ 🎓 matura
 
 def _kartica_matura(sheet, nastavnik):
+    _uputa.prikazi(st, "matura")
     df_ras = _ucitaj(naziv_taba_rasporeda_mature(SEZONA))
     kante = matura_kante(df_ras)
     if not kante:
@@ -559,6 +563,38 @@ def _blok_osvrt(nastavnik: str, u, imena_svi=()):
         tekst = st.text_area("Poruka roditelju (možeš slobodno urediti)", key=f"osv_tekst_{uid}", height=180,
                              placeholder="Označi rečenice i klikni „🧩 Sastavi poruku” — ili ovdje upiši svoj tekst.")
 
+        # 21.10.2026.: 🤖 AI uglančavanje ISTIH podataka — model NE dobiva ime (v. komentar_ai.py).
+        # Gumb se prikaže samo kad je ključ u Secrets, pa ništa ne puca dok ga Caki ne postavi.
+        if _ai.ima_kljuc(st):
+            if st.button("🤖 Sastavi ljepše (AI)", key=f"osv_ai_btn_{uid}",
+                         help="Model prepiše iste podatke i tvoje odabrane rečenice ljepšim stilom. "
+                              "Ne dobiva ime djeteta — ono se ubacuje ovdje, u aplikaciji. Ti pregledaš i "
+                              "možeš urediti prije slanja."):
+                odabrane_ai = ([otv] if otv else []) \
+                    + _osvrt_odabrane(po_id, sel_dobro + sel_zapelo + sel_cilj + sel_kuce) \
+                    + ([zav] if zav else [])
+                payload = _ai.sastavi_payload(k, ime_ucenika=ime, rod=rod, cilj=cilj_txt,
+                                              fraze=odabrane_ai, duljina=duljina)
+                try:
+                    with st.spinner("Model piše…"):
+                        rez_ai = _ai.sastavi(payload, ime_ucenika=ime, rod=rod,
+                                             pozovi=_ai.napravi_pozivatelja(st))
+                    st.session_state[f"osv_tekst_{uid}"] = rez_ai["tekst"]
+                    st.session_state[f"osv_ai_{uid}"] = rez_ai
+                    st.session_state[f"osv_fraze_{uid}"] = [f["fraza_id"] for f in odabrane_ai]
+                except Exception as e_ai:                      # noqa: BLE001 — AI ne smije rušiti karticu
+                    _poruka("error", f"AI nije odgovorio: {e_ai}")
+                    st.rerun()
+        else:
+            st.caption("🤖 Gumb „Sastavi ljepše” prikaže se kad se u Secrets doda `ANTHROPIC_API_KEY`.")
+
+        ai_info = st.session_state.get(f"osv_ai_{uid}") or {}
+        for w_ai in ai_info.get("upozorenja", []):
+            st.warning(w_ai, icon="🤖")
+        if ai_info.get("tekst"):
+            st.caption(f"🤖 Sastavljeno modelom `{ai_info.get('model', '')}` iz tvojih podataka i odabranih "
+                       "rečenica — pregledaj prije slanja.")
+
         imena = [x for x in (imena_svi or ()) if _t_ime(x) != _t_ime(ime)]
         blokira, upozorenja = _osvrt.provjeri_tekst(tekst, ime_ucenika=ime, druga_imena=imena)
         for b in blokira:
@@ -572,8 +608,11 @@ def _blok_osvrt(nastavnik: str, u, imena_svi=()):
                 _osvrt.posalji_poruku(_init_sheet(), ucenik_id=uid, ime_djeteta=ime, nastavnik=nastavnik,
                                       tekst=tekst, predmet=str(u.get("predmet") or ""),
                                       program="INSTRUKCIJE", razdoblje_od=od, razdoblje_do=do,
-                                      fraze=st.session_state.get(f"osv_fraze_{uid}", []), izvor="fraze")
-                for k_ in (f"osv_tekst_{uid}", f"osv_fraze_{uid}", f"osv_sastav_{uid}"):
+                                      fraze=st.session_state.get(f"osv_fraze_{uid}", []),
+                                      izvor="ai" if (st.session_state.get(f"osv_ai_{uid}") or {}).get("tekst")
+                                      else "fraze",
+                                      model=(st.session_state.get(f"osv_ai_{uid}") or {}).get("model", ""))
+                for k_ in (f"osv_tekst_{uid}", f"osv_fraze_{uid}", f"osv_sastav_{uid}", f"osv_ai_{uid}"):
                     st.session_state.pop(k_, None)
                 _poruka("success", f"Osvrt poslan — {ime} ga vidi u Moj CAKI → 📈 Napredak.")
             except ValueError as e_o:
@@ -610,6 +649,7 @@ def _opcije_ucenika(moji) -> dict:
 
 
 def _kartica_moji_ucenici(nastavnik):
+    _uputa.prikazi(st, "moji_ucenici")
     st.caption("Učenici koje vam je dodijelio admin. Kontakt vidite samo kad je dopušten (za prvi dogovor). "
                "Podatke ne prepisujte u privatni imenik i ne dijelite ih dalje.")
     moji = _moji_ucenici(nastavnik)
@@ -770,6 +810,7 @@ def _blok_ispravak_termina(sheet, nastavnik, moji_t, ima_status):
 
 
 def _kartica_instrukcije(sheet, nastavnik, smije_gotovinu):
+    _uputa.prikazi(st, "instrukcije")
     df_instr = _ucitaj("Instrukcije_termini")
     ima_status = "status_termina" in df_instr.columns
     st.markdown("#### Novi termin")
@@ -975,6 +1016,7 @@ def _kartica_instrukcije(sheet, nastavnik, smije_gotovinu):
 # ------------------------------------------------------------------ 📄 mjesečni izvještaj
 
 def _kartica_izvjestaj(sheet, nastavnik):
+    _uputa.prikazi(st, "izvjestaj")
     danas = sada_zagreb().date()
     mjeseci = []
     g, m = danas.year, danas.month
@@ -1037,6 +1079,7 @@ def _broj_neodgovorenih_upita(nastavnik) -> int:
 
 
 def _kartica_upiti(sheet, nastavnik):
+    _uputa.prikazi(st, "upiti")
     st.caption("Novi upiti za instrukcije. Ime i kontakt obitelji ne vide se dok vam admin ne dodijeli učenika. "
                "**Preuzimam** = zainteresirani ste i imate termin; više kolega može preuzeti isti upit, a odluku "
                "donosi admin. Do dodjele **ne kontaktirajte** obitelj.")
@@ -1091,6 +1134,7 @@ def _kartica_upiti(sheet, nastavnik):
 
 def _kartica_dostupnost(sheet, nastavnik):
     """Tjedna dostupnost za NOVE instrukcije. Služi adminu da zna kome može dodijeliti novog učenika; ništa se ne šalje."""
+    _uputa.prikazi(st, "dostupnost")
     trenutna = _dost.dostupnost_profesora(_ucitaj(_dost.DOSTUPNOST_TAB), nastavnik)
     st.caption("Označite dane i vrijeme kad biste mogli preuzeti **nove** instrukcije (do dva okvira dnevno). "
                "Admin to vidi kad dodjeljuje nove učenike. Postojeće termine ovo ne mijenja.")
@@ -1164,6 +1208,7 @@ def _kartica_dostupnost(sheet, nastavnik):
 
 def _kartica_danas(nastavnik):
     """Početni pregled: što je danas, što čeka upis i do kada, status izvještaja. Samo čitanje."""
+    _uputa.prikazi(st, "danas")
     danas = sada_zagreb().date()
     razdoblja, praznici = _razdoblja_i_praznici()
     blokovi = _danas.moji_blokovi(_ucitaj("Grupe"), _ucitaj(naziv_taba_rasporeda_mature(SEZONA)),
@@ -1193,6 +1238,17 @@ def _kartica_danas(nastavnik):
             st.info("🗓️ Dostupnost za nove instrukcije nije unesena ili je stara — ažurirajte je u kartici 🗓️ Dostupnost.")
     except Exception:
         pass
+
+    # 21.10.2026.: ✍️ podsjetnik na osvrt roditelju — bez njega profesor ne otvara karticu sam.
+    try:
+        cekaju_o = _osvrt.cekaju_osvrt(_poruke_osvrta(), _moji_ucenici(nastavnik),
+                                       _ucitaj("Instrukcije_termini"), danas)
+    except Exception:                                   # noqa: BLE001 — podsjetnik ne smije rušiti 🏠 Danas
+        cekaju_o = []
+    if cekaju_o:
+        imena_o = ", ".join(x["ime_djeteta"] for x in cekaju_o[:4]) + (" …" if len(cekaju_o) > 4 else "")
+        st.info(f"✍️ **Osvrt roditelju čeka {len(cekaju_o)} učenika** — {imena_o}. "
+                "Otvori **👩‍🎓 Moji učenici → ✍️ Napiši roditelju** (jednom u 4 tjedna po učeniku).")
 
     lijevo, desno = st.columns(2, gap="large")
     with lijevo:

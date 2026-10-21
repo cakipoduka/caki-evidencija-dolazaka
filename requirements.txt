@@ -3,3 +3,6 @@ gspread
 google-auth
 pandas
 reportlab
+# 21.10.2026.: AI gumb za osvrt roditelju (komentar_ai.py). Bez paketa portal radi normalno,
+# samo se gumb ne prikaze (i kljuc ionako mora biti u Secrets).
+anthropic>=0.34
