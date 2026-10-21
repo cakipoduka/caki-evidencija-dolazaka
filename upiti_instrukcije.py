@@ -28,6 +28,7 @@ from pipeline_upisi import (
     _osiguraj_tab_stupce,
     aktivne_dodjele,
     dodaj_dodjelu,
+    razred_sada,
     sada_zagreb,
 )
 
@@ -65,10 +66,41 @@ def predmet_odgovara(predmeti_prof: list, predmet: str) -> bool:
     return False
 
 
+def oznaka_upita(redak_id: str) -> str:
+    """Kratka oznaka upita (#AB12) — da se dva upita iz istog predmeta razlikuju na prvi pogled
+    i da se profesor i admin mogu dogovarati o konkretnom upitu bez spominjanja imena."""
+    t = _t(redak_id).upper()
+    return "#" + (t[-4:] if len(t) >= 4 else t) if t else ""
+
+
+def drugi_programi_ucenika(df_prijave: pd.DataFrame, ucenik_id: str, sezona: str = "") -> list:
+    """Ostali AKTIVNI programi tog učenika (Matura, Upisi) — profesoru govori o kakvoj je razini
+    riječ (npr. maturant koji usput treba instrukcije). Instrukcije se ovdje ne ponavljaju."""
+    if df_prijave is None or df_prijave.empty or "program_tip" not in df_prijave.columns:
+        return []
+    out = []
+    for _, r in df_prijave.iterrows():
+        if _t(r.get("ucenik_id")) != _t(ucenik_id):
+            continue
+        program = _t(r.get("program_tip")) or ("Upisi" if _t(r.get("komponenta")) else "")
+        if program in ("", "Instrukcije") or _t(r.get("status_kontakta")) in ZATVORENI_STATUSI_POZIVA:
+            continue
+        if sezona and _t(r.get("sezona")) and _t(r.get("sezona")) != sezona:
+            continue
+        detalj = _t(r.get("predmet")) or _t(r.get("komponenta"))
+        razina = _t(r.get("razina_ispita")).upper()
+        oznaka = program + (f" · {detalj}" if detalj else "") + (f" ({razina})" if razina in ("A", "B") else "")
+        if oznaka not in out:
+            out.append(oznaka)
+    return out
+
+
 def otvoreni_upiti(df_prijave: pd.DataFrame, df_dodjele: pd.DataFrame, danas: date, sezona: str = "",
-                   max_dana: int | None = UPIT_MAX_DANA, samo_stari: bool = False) -> list:
-    """Upiti za instrukcije koje još nitko nije preuzeo u dodjelu. [{redak_id, ucenik_id, ime_djeteta, predmet,
-    stupanj, oblik, napomena, stiglo (date|None), dana}] — najstariji prvi.
+                   max_dana: int | None = UPIT_MAX_DANA, samo_stari: bool = False,
+                   df_ucenici: pd.DataFrame | None = None) -> list:
+    """Upiti za instrukcije koje još nitko nije preuzeo u dodjelu. [{redak_id, oznaka, ucenik_id,
+    ime_djeteta, predmet, stupanj, razred, skola, oblik, programi, napomena, stiglo (date|None), dana}]
+    — najstariji prvi. `df_ucenici` (neobavezno) daje školu i razred (21.10.2026.).
     Otvoren = program_tip Instrukcije, poziv nije Odustao/Otkazano, nema aktivne dodjele za isti predmet
     (dodjela bez predmeta pokriva sve predmete učenika).
     20.10.2026.: `max_dana` (zadano 30) odbacuje upite starije od toga i one bez datuma;
@@ -95,8 +127,17 @@ def otvoreni_upiti(df_prijave: pd.DataFrame, df_dodjele: pd.DataFrame, danas: da
             star = stiglo is None or (danas - stiglo).days > max_dana
             if star != samo_stari:
                 continue
-        out.append({"redak_id": _t(r.get("redak_id")), "ucenik_id": uid, "ime_djeteta": _t(r.get("ime_djeteta")),
-                    "predmet": predmet, "stupanj": _t(r.get("stupanj_skolovanja")), "oblik": _t(r.get("oblik_instrukcija")),
+        u_red = None
+        if df_ucenici is not None and not df_ucenici.empty and "ucenik_id" in df_ucenici.columns:
+            nadeno = df_ucenici[df_ucenici["ucenik_id"].astype(str).str.strip() == uid]
+            u_red = nadeno.iloc[0] if not nadeno.empty else None
+        out.append({"redak_id": _t(r.get("redak_id")), "oznaka": oznaka_upita(r.get("redak_id")),
+                    "ucenik_id": uid, "ime_djeteta": _t(r.get("ime_djeteta")),
+                    "predmet": predmet, "stupanj": _t(r.get("stupanj_skolovanja")),
+                    "razred": razred_sada(u_red) if u_red is not None else "",
+                    "skola": _t(u_red.get("skola")) if u_red is not None else "",
+                    "oblik": _t(r.get("oblik_instrukcija")),
+                    "programi": drugi_programi_ucenika(df_prijave, uid, sezona),
                     "napomena": _t(r.get("napomena")), "stiglo": stiglo,
                     "dana": (danas - stiglo).days if stiglo else None})
     return sorted(out, key=lambda x: (x["stiglo"] or date.max, x["redak_id"]))
@@ -115,17 +156,25 @@ def odgovori_upita(df_upiti: pd.DataFrame) -> dict:
 
 
 def upiti_za_profesora(otvoreni: list, df_upiti: pd.DataFrame, profesor: str, predmeti_prof: list,
-                       samo_moji_predmeti: bool = True) -> list:
-    """Što profesor smije vidjeti: samo sigurna polja + njegov odgovor. Neodgovoreni prvi."""
+                       samo_moji_predmeti: bool = True, puni_podaci: bool = False) -> list:
+    """Što profesor smije vidjeti: sigurna polja + njegov odgovor. Neodgovoreni prvi.
+    21.10.2026.: uz predmet idu i škola, razred, stupanj, oblik, ostali programi i oznaka upita —
+    bez toga su svi upiti izgledali isto („Matematika · Srednja škola”). IME I KONTAKT i dalje
+    dobiva samo admin (`puni_podaci=True`); običnom profesoru ime stiže tek s dodjelom."""
     odg = odgovori_upita(df_upiti)
     out = []
     for u in otvoreni:
         if samo_moji_predmeti and not predmet_odgovara(predmeti_prof, u["predmet"]):
             continue
         moj = next((o for o in odg.get(u["redak_id"], []) if o["profesor"] == profesor), None)
-        out.append({"redak_id": u["redak_id"], "ucenik_id": u["ucenik_id"], "predmet": u["predmet"],
-                    "stupanj": u["stupanj"], "oblik": u["oblik"], "dana": u["dana"],
-                    "moj_odgovor": moj["odgovor"] if moj else "", "moja_napomena": moj["napomena"] if moj else ""})
+        zapis = {"redak_id": u["redak_id"], "oznaka": u.get("oznaka", ""), "ucenik_id": u["ucenik_id"],
+                 "predmet": u["predmet"], "stupanj": u["stupanj"], "razred": u.get("razred", ""),
+                 "skola": u.get("skola", ""), "oblik": u["oblik"],
+                 "programi": list(u.get("programi", [])), "dana": u["dana"],
+                 "moj_odgovor": moj["odgovor"] if moj else "", "moja_napomena": moj["napomena"] if moj else ""}
+        if puni_podaci:        # samo admin — običnom profesoru ključ IME NE POSTOJI (ne samo prazan)
+            zapis["ime_djeteta"] = u.get("ime_djeteta", "")
+        out.append(zapis)
     return sorted(out, key=lambda x: (x["moj_odgovor"] != "", -(x["dana"] or 0)))
 
 

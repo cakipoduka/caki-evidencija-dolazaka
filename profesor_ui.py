@@ -116,6 +116,7 @@ from pipeline_upisi import (
     izvjestaj_instruktora,
     load_izvjestaji,
     PROGRAMI_NASTAVNIKA,
+    je_admin_nastavnik,
     nastavnik_radi_program,
     nastavnici_aktivni,   # noqa: F401  (ostaje za ostale dijelove portala)
     nastavnik_po_prijavi,
@@ -782,18 +783,31 @@ def _kartica_upiti(sheet, nastavnik):
     st.caption("Novi upiti za instrukcije. Ime i kontakt obitelji ne vide se dok vam admin ne dodijeli učenika. "
                "**Preuzimam** = zainteresirani ste i imate termin; više kolega može preuzeti isti upit, a odluku "
                "donosi admin. Do dodjele **ne kontaktirajte** obitelj.")
-    predmeti_prof = predmeti_nastavnika(_ucitaj("Nastavnici"), nastavnik)
+    df_n_upiti = _ucitaj("Nastavnici")
+    predmeti_prof = predmeti_nastavnika(df_n_upiti, nastavnik)
     samo_moji = st.toggle("Samo upiti za moje predmete", value=True, key="upiti_samo_moji") if predmeti_prof else False
-    upiti = _upiti.upiti_za_profesora(_upiti_otvoreni(), _ucitaj(_upiti.UPITI_TAB), nastavnik, predmeti_prof, samo_moji)
+    # 21.10.2026.: admin (Caki/Neira) vidi i ime učenika — u admin sučelju ga ionako vidi.
+    je_admin_u = je_admin_nastavnik(df_n_upiti, nastavnik)
+    upiti = _upiti.upiti_za_profesora(_upiti_otvoreni(), _ucitaj(_upiti.UPITI_TAB), nastavnik, predmeti_prof,
+                                      samo_moji, puni_podaci=je_admin_u)
     if not upiti:
         st.success("Trenutno nema otvorenih upita. 👍")
         return
     for u in upiti:
         with st.container(border=True):
             c1, c2, c3 = st.columns([3, 4, 3], gap="medium")
-            c1.markdown(f"**{u['predmet'] or '—'}**")
-            c1.caption(" · ".join(x for x in [u["stupanj"], u["oblik"],
-                                              f"prije {u['dana']} dana" if u["dana"] is not None else ""] if x))
+            # 21.10.2026.: prije je pisalo samo "Matematika · Srednja škola" pa su svi upiti izgledali
+            # isto. Sada: tko (admin) ili oznaka upita, predmet, razred, škola, program i starost.
+            naslov_u = (u.get("ime_djeteta") or "").strip() or f"Upit {u.get('oznaka', '')}".strip()
+            razina_u = " · ".join(x for x in [u.get("razred", ""), u["stupanj"]] if x)
+            c1.markdown(f"**{naslov_u}**" + (f" · {razina_u}" if razina_u else ""))
+            c1.markdown(f"📚 **{u['predmet'] or '—'}**" + (f" · {u['oblik']}" if u["oblik"] else ""))
+            if u.get("skola"):
+                c1.caption(f"🏫 {u['skola']}")
+            if u.get("programi"):
+                c1.caption("🎓 " + " · ".join(u["programi"]))
+            c1.caption(" · ".join(x for x in [f"prije {u['dana']} dana" if u["dana"] is not None else "",
+                                              u.get("oznaka", "") if u.get("ime_djeteta") else ""] if x))
             nap = c2.text_input("Kad vam odgovara (nije obavezno)", value=u["moja_napomena"],
                                 key=f"upit_nap_{u['redak_id']}", placeholder="npr. ponedjeljkom i srijedom poslije 17 h",
                                 max_chars=200)
