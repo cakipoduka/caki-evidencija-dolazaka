@@ -55,6 +55,9 @@ from pipeline_upisi import (
     HONORARI_TAB,
     IZVJESTAJI_TAB,
     OTKAZ_SATI,
+    POLJA_ISPRAVKA,   # noqa: F401  (dokumentira što se smije ispraviti)
+    ROK_ISPRAVKA_SATI,
+    VREMENA_TERMINA,
     OZNAKE_STATUSA_TERMINA,
     STATUSI_TERMINA,
     aktivne_dodjele,
@@ -117,6 +120,9 @@ from pipeline_upisi import (
     load_izvjestaji,
     PROGRAMI_NASTAVNIKA,
     je_admin_nastavnik,
+    obrisi_termin_instrukcija,
+    smije_ispraviti_termin,
+    uredi_termin_instrukcija,
     nastavnik_radi_program,
     nastavnici_aktivni,   # noqa: F401  (ostaje za ostale dijelove portala)
     nastavnik_po_prijavi,
@@ -527,6 +533,102 @@ def _sat_napomena_gotovina(sheet, termin_id, nastavnik):
                         interna=_napomena_s_gotovinom(stara, PLACANJE_GOTOVINA, False), nastavnik=nastavnik)
 
 
+ODABERI_UCENIKA = "— unesi učenika —"
+
+
+def _datum_ili_danas(v):
+    """'2026-10-21' -> date; prazno ili neispravno -> danas."""
+    try:
+        return date.fromisoformat(str(v)[:10])
+    except (ValueError, TypeError):
+        return sada_zagreb().date()
+
+
+def _blok_ispravak_termina(sheet, nastavnik, moji_t, ima_status):
+    """21.10.2026. (Cakijev zahtjev): unutar ROK_ISPRAVKA_SATI (24 h) od upisa profesor sam
+    ispravlja SVAKI detalj svog termina — ili ga briše ako je krivo upisan. Poslije toga ispravak
+    radi admin (Caki/Neira), koji nema rok."""
+    za_ispravak = [t for _, t in moji_t.iterrows() if smije_ispraviti_termin(t, nastavnik)[0]]
+    if not za_ispravak:
+        st.caption(f"✏️ Ispravak termina moguć je {ROK_ISPRAVKA_SATI} h nakon upisa. "
+                   "Za stariji ispravak javite se adminu.")
+        return
+    with st.expander(f"✏️ Ispravak upisanog termina ({len(za_ispravak)} u roku od {ROK_ISPRAVKA_SATI} h)"):
+        st.caption("Možete promijeniti sve podatke ili obrisati termin ako je krivo upisan. "
+                   f"Nakon {ROK_ISPRAVKA_SATI} h ispravak radi admin.")
+        opcije_i = {f"{str(t['datum'])[:10]} {str(t.get('vrijeme', '') or '')} · {t['ime_djeteta']} · "
+                    f"{t.get('predmet', '') or '—'}": t for t in za_ispravak}
+        t = opcije_i[st.selectbox("Termin", list(opcije_i), key="isp_termin")]
+        kljuc = f"isp_{t['termin_id']}"
+        i1, i2, i3 = st.columns([2, 1, 1])
+        n_datum = i1.date_input("Datum", value=_datum_ili_danas(t.get("datum")),
+                                format="DD.MM.YYYY", key=f"{kljuc}_d")
+        v_sad = str(t.get("vrijeme", "") or "")
+        n_vrijeme = i2.selectbox("Vrijeme", [""] + VREMENA_TERMINA,
+                                 index=([""] + VREMENA_TERMINA).index(v_sad) if v_sad in VREMENA_TERMINA else 0,
+                                 format_func=lambda v: v or "—", key=f"{kljuc}_v")
+        d_sad = str(t.get("duljina_min", "") or "")
+        n_duljina = i3.selectbox("Trajanje (min)", INSTRUKCIJE_TRAJANJA,
+                                 index=INSTRUKCIJE_TRAJANJA.index(int(d_sad)) if d_sad.isdigit()
+                                 and int(d_sad) in INSTRUKCIJE_TRAJANJA else 1, key=f"{kljuc}_dulj")
+        i4, i5 = st.columns(2)
+        p_sad = str(t.get("predmet", "") or "")
+        n_predmet = i4.selectbox("Predmet", INSTRUKCIJE_PREDMETI,
+                                 index=INSTRUKCIJE_PREDMETI.index(p_sad) if p_sad in INSTRUKCIJE_PREDMETI else 0,
+                                 key=f"{kljuc}_p")
+        s_sad = str(t.get("stupanj_skolovanja", "") or "")
+        n_stupanj = i5.selectbox("Stupanj školovanja", STUPNJEVI_SKOLOVANJA_INSTR,
+                                 index=STUPNJEVI_SKOLOVANJA_INSTR.index(s_sad)
+                                 if s_sad in STUPNJEVI_SKOLOVANJA_INSTR else 1, key=f"{kljuc}_st")
+        i6, i7 = st.columns([3, 1])
+        o_sad = str(t.get("oblik", "") or "")
+        n_oblik = i6.radio("Oblik", INSTRUKCIJE_OBLICI, horizontal=True,
+                           index=INSTRUKCIJE_OBLICI.index(o_sad) if o_sad in INSTRUKCIJE_OBLICI else 0,
+                           key=f"{kljuc}_o")
+        b_sad = str(t.get("broj_ucenika_u_grupi", "") or "1")
+        n_broj = i7.number_input("U grupi", min_value=1, max_value=10,
+                                 value=int(b_sad) if b_sad.isdigit() else 1, key=f"{kljuc}_b")
+        n_status = str(t.get("status_termina", "") or "Održan")
+        if ima_status:
+            n_status = st.radio("Termin", STATUSI_TERMINA, horizontal=True,
+                                format_func=OZNAKE_STATUSA_TERMINA.get,
+                                index=STATUSI_TERMINA.index(n_status) if n_status in STATUSI_TERMINA else 0,
+                                key=f"{kljuc}_s")
+        n_jav = st.text_area("📒 Bilješka sa sata (vidi i roditelj)",
+                             value=str(t.get("napomena_javna", "") or ""), key=f"{kljuc}_j")
+        n_int = st.text_area("Napomena interna", value=str(t.get("napomena_interna", "") or ""),
+                             key=f"{kljuc}_i")
+        teme_i, ocjena_i, zadaca_i = _polja_sata(kljuc, n_predmet, n_stupanj,
+                                                 teme0=_sat.teme_iz_teksta(t.get("teme", "")),
+                                                 ocjena0=str(t.get("ocjena_sata", "") or ""),
+                                                 zadaca0=str(t.get("zadaca_zadana", "") or "") == "Da")
+        g1, g2 = st.columns([1, 1])
+        if g1.button("💾 Spremi ispravak", key=f"{kljuc}_save", type="primary"):
+            try:
+                uredi_termin_instrukcija(sheet, t["termin_id"], {
+                    "datum": str(n_datum), "vrijeme": n_vrijeme, "duljina_min": n_duljina,
+                    "oblik": n_oblik, "broj_ucenika_u_grupi": n_broj if n_oblik == "Grupa" else "",
+                    "predmet": n_predmet, "stupanj_skolovanja": n_stupanj, "status_termina": n_status,
+                    "napomena_javna": n_jav, "napomena_interna": n_int}, nastavnik=nastavnik)
+                if n_status not in _sat.STATUSI_BEZ_SATA:
+                    _sat.spremi_sat(sheet, t["termin_id"], teme_i, ocjena_i, zadaca_i, nastavnik=nastavnik)
+                _poruka("success", "Termin ispravljen.")
+            except ValueError as e:
+                _poruka("error", str(e))
+            st.cache_data.clear()
+            st.rerun()
+        with g2.popover("🗑️ Obriši termin"):
+            st.caption("Termin se briše trajno (koristi se kad je krivo upisan).")
+            if st.button("Da, obriši", key=f"{kljuc}_del", type="primary"):
+                try:
+                    obrisi_termin_instrukcija(sheet, t["termin_id"], nastavnik=nastavnik)
+                    _poruka("success", "Termin obrisan.")
+                except ValueError as e:
+                    _poruka("error", str(e))
+                st.cache_data.clear()
+                st.rerun()
+
+
 def _kartica_instrukcije(sheet, nastavnik, smije_gotovinu):
     df_instr = _ucitaj("Instrukcije_termini")
     ima_status = "status_termina" in df_instr.columns
@@ -536,8 +638,16 @@ def _kartica_instrukcije(sheet, nastavnik, smije_gotovinu):
         st.info("Nemate dodijeljenih učenika, pa ne možete upisati termin. Admin vas povezuje s učenikom "
                 "(👩‍🎓 Moji učenici). Javite se adminu.")
     else:
+        # 21.10.2026. (Cakijev zahtjev): u izborniku na početku NE stoji ime nekog učenika —
+        # prvo piše „— unesi učenika —”, pa se tek odabirom otvara ostatak obrasca.
         opcije = _opcije_ucenika(moji)
-        u = opcije[st.selectbox("Učenik (samo vaši)", options=list(opcije), key="instr_ucenik")]
+        u_c1, _u_c2 = st.columns([2, 3])          # uži izbornik, ne preko cijele širine
+        odabir_u = u_c1.selectbox("Učenik (samo vaši)", options=[ODABERI_UCENIKA] + list(opcije),
+                                  key="instr_ucenik")
+    if not moji.empty and odabir_u == ODABERI_UCENIKA:
+        st.caption("Odaberite učenika da biste upisali termin.")
+    elif not moji.empty:
+        u = opcije[odabir_u]
         uid, ime = u["ucenik_id"], u["ime_djeteta"]
         zadani_predmet = (u["predmet"].split(", ")[0] if u["predmet"] else "")
         _blok_zadaca_na_cekanju(sheet, nastavnik, uid, "novi", df_instr)
@@ -548,16 +658,21 @@ def _kartica_instrukcije(sheet, nastavnik, smije_gotovinu):
                                        f"Otkazivanje kasnije od {OTKAZ_SATI} h ili nedolazak se naplaćuje.")
             else:
                 status = "Održan"
-            c1, c2, c3 = st.columns(3)
+            # 21.10.2026.: kompaktnije — polja u stupcima, vrijeme iz izbornika (15 min, 8:00-21:30),
+            # a „Oblik” i „Broj učenika u grupi” u istom redu (Cakijeve oznake na snimci zaslona).
+            c1, c2, c3 = st.columns([2, 1, 1])
             datum = c1.date_input("Datum", value=sada_zagreb().date(), format="DD.MM.YYYY")
-            vrijeme = c2.text_input("Vrijeme (npr. 17:00)") if ima_status else ""
-            duljina = c3.selectbox("Duljina termina (min)", options=INSTRUKCIJE_TRAJANJA, index=1)
+            vrijeme = c2.selectbox("Vrijeme", options=[""] + VREMENA_TERMINA,
+                                   format_func=lambda v: v or "—") if ima_status else ""
+            duljina = c3.selectbox("Trajanje (min)", options=INSTRUKCIJE_TRAJANJA, index=1)
             c4, c5 = st.columns(2)
             predmet = c4.selectbox("Predmet", options=INSTRUKCIJE_PREDMETI,
                                    index=INSTRUKCIJE_PREDMETI.index(zadani_predmet) if zadani_predmet in INSTRUKCIJE_PREDMETI else 0)
             stupanj = c5.selectbox("Stupanj školovanja", options=STUPNJEVI_SKOLOVANJA_INSTR, index=1)
-            oblik = st.radio("Oblik", options=INSTRUKCIJE_OBLICI, horizontal=True)
-            broj = st.number_input("Broj učenika u grupi (samo za grupu)", min_value=1, max_value=10, value=1)
+            c6, c7 = st.columns([3, 1])
+            oblik = c6.radio("Oblik", options=INSTRUKCIJE_OBLICI, horizontal=True)
+            broj = c7.number_input("U grupi", min_value=1, max_value=10, value=1,
+                                   help="Broj učenika — samo kad je oblik Grupa.")
             # 21.10.2026. (Cakijev zahtjev): oblik plaćanja je OBAVEZAN — bez njega se sat ne sprema.
             placanje = st.radio("Plaćanje (obavezno)", PLACANJE_OPCIJE, horizontal=True,
                                 index=None, key="instr_placanje",
@@ -697,6 +812,8 @@ def _kartica_instrukcije(sheet, nastavnik, smije_gotovinu):
                     _poruka("error", str(e))
                 st.cache_data.clear()
                 st.rerun()
+
+    _blok_ispravak_termina(sheet, nastavnik, moji_t, ima_status)
 
     if smije_gotovinu and "status_obracuna" in moji_t.columns:
         otvoreni = moji_t[~placeno & moji_t["status_obracuna"].fillna("").isin(STATUSI_ZA_OBRACUN)].head(20)
