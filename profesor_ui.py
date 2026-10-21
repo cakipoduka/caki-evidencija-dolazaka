@@ -49,6 +49,7 @@ import profesor_danas as _danas
 import dostupnost_profesora as _dost
 import upiti_instrukcije as _upiti
 import sat_biljeska as _sat
+import komentar_napretka as _osvrt   # 21.10.2026.: ✍️ osvrt roditelju (baza fraza, bez AI-a)
 
 from pipeline_upisi import (
     DODJELE_TAB,
@@ -448,6 +449,143 @@ def _kartica_matura(sheet, nastavnik):
 
 # ------------------------------------------------------------------ 📝 instrukcije
 
+# ------------------------------------------------------------------ ✍️ osvrt roditelju (21.10.2026.)
+# Cakijeva odluka: prvo BAZA FRAZA (radi bez ijednog API poziva), AI dolazi kasnije kao gumb na isto.
+# Profesor ne tipka ništa što sustav već zna — bira 3–5 rečenica i pošalje. Poruka ide u Moj CAKI
+# (kartica 📈 Napredak), nikad mailom ni WhatsAppom, i nikad se ne šalje sama.
+
+RAZDOBLJA_OSVRTA = {"Od zadnje poruke": 0, "Zadnjih 30 dana": 30, "Zadnjih 60 dana": 60, "Cijela suradnja": 3650}
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _fraze_osvrta() -> list:
+    return _osvrt.ucitaj_fraze(_init_sheet())
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _poruke_osvrta():
+    return _osvrt.ucitaj_poruke(_init_sheet())
+
+
+def _osvrt_odabrane(po_id: dict, polja: list) -> list:
+    """Sakupi označene fraze u jednom popisu (redoslijed unutar poruke određuje modul, ne sučelje)."""
+    return [po_id[i] for i in polja if i in po_id]
+
+
+def _blok_osvrt(nastavnik: str, u, imena_svi=()):
+    """✍️ Napiši roditelju — unutar kartice učenika (👩‍🎓 Moji učenici)."""
+    uid = str(u["ucenik_id"])
+    df_poruke = _poruke_osvrta()
+    zadnja = _osvrt.zadnja_poruka(df_poruke, uid)
+    naslov = "✍️ Napiši roditelju"
+    if zadnja:
+        naslov += f" — zadnji osvrt {zadnja.strftime('%d.%m.%Y.')}"
+    with st.expander(naslov):
+        st.caption("Poruka se sastavlja iz onoga što je **već upisano** (sati, zadaća, testovi, bilješke sa sata). "
+                   "Odaberi rečenice klikom, po potrebi dopiši svojim riječima i pošalji. Poruka čeka u "
+                   "**Moj CAKI → 📈 Napredak**; ne šalje se mailom ni WhatsAppom i nikad ne odlazi sama.")
+        df_ucenici = _ucitaj("Učenici")
+        ime = _osvrt.ime_iz_kartice(df_ucenici, uid) or str(u.get("ime_djeteta") or "")
+        rod = _osvrt.rod_ucenika(df_ucenici, uid)
+        if not rod:
+            st.caption("ℹ️ Rod učenika nije upisan (admin: kartica učenika → 👤 Podaci → Rod). Rečenice tada "
+                       "koriste muški oblik — „koncentriran” umjesto „koncentrirana”.")
+
+        c_r, c_d = st.columns([1, 1])
+        izbor_raz = c_r.selectbox("Razdoblje osvrta", list(RAZDOBLJA_OSVRTA), key=f"osv_raz_{uid}",
+                                  help="Zadano je razdoblje od zadnje poslane poruke, da se ne ponavlja isto.")
+        duljina = c_d.radio("Duljina", list(_osvrt.DULJINE), format_func=lambda k: _osvrt.DULJINE[k],
+                            horizontal=True, key=f"osv_dulj_{uid}")
+        danas = _osvrt.sada().date()
+        if RAZDOBLJA_OSVRTA[izbor_raz] == 0:
+            od, do = _osvrt.razdoblje_od_zadnje(df_poruke, uid, danas)
+        else:
+            od, do = danas - timedelta(days=RAZDOBLJA_OSVRTA[izbor_raz]), danas
+
+        k = _osvrt.kartica_ucenika(_ucitaj("Instrukcije_termini"), _ucitaj("Rezultati_testova"), uid, od, do)
+        k["predmet"] = str(u.get("predmet") or "")
+        t = _osvrt.tekst_kartice(k)
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("✅ Sati", t["sati"], help="Održani / ukupno evidentiranih u razdoblju.")
+        m2.metric("📝 Zadaća", t["zadaca"])
+        m3.metric("🧪 Testovi", t["test"])
+        m4.metric("📈 Razlika", t["napredak"] or "—", help="Zadnji minus prvi test (postotni bodovi).")
+        st.caption(f"Razdoblje: **{_osvrt.tekst_razdoblja(od, do)}** · {od.strftime('%d.%m.%Y.')} – "
+                   f"{do.strftime('%d.%m.%Y.')}. Ništa se ne mijenja u podacima — ovo je samo prikaz.")
+
+        fraze = _fraze_osvrta()
+        po_id = {f["fraza_id"]: f for f in fraze}
+        p = _osvrt.predlozi(k, fraze)
+        for n in p["napomene"]:
+            st.caption(n)
+
+        cilj_txt = st.text_input("🎯 Cilj do sljedećeg osvrta (svojim riječima, kratko)", key=f"osv_ciljtekst_{uid}",
+                                 placeholder="npr. samostalno provjeri rješenje prije predaje",
+                                 help="Umeće se u rečenice cilja i savjeta za rad kod kuće. Bez ovoga te "
+                                      "rečenice ne mogu se sastaviti (preskoče se).")
+        cilj_txt = str(cilj_txt or "").strip()
+
+        def _izbor(kljuc: str, naslov_polja: str, kategorije, predlozeno) -> list:
+            opcije = [f["fraza_id"] for f in fraze if str(f.get("kategorija", "")) in kategorije]
+            if not opcije:
+                return []
+            return st.multiselect(naslov_polja, opcije,
+                                  default=[x["fraza_id"] for x in predlozeno if x["fraza_id"] in opcije],
+                                  format_func=lambda i: _osvrt.oznaka_fraze(po_id.get(i, {})),
+                                  key=f"osv_{kljuc}_{uid}")
+
+        sel_dobro = _izbor("dobro", "✅ Što je dobro",
+                           [_osvrt.DOBRO + ":" + d for d in _osvrt.DIMENZIJE_DOBRO], p["dobro"])
+        sel_zapelo = _izbor("zapelo", "⚠️ Gdje je zapelo",
+                            [_osvrt.ZAPELO + ":" + d for d in _osvrt.DIMENZIJE_ZAPELO] + [_osvrt.TESKO], p["zapelo"])
+        sel_cilj = _izbor("cilj", "🎯 Kako to kažemo roditelju", [_osvrt.CILJ], p["cilj"])
+        sel_kuce = _izbor("kuce", "🏠 Što pomaže kod kuće", [_osvrt.KOD_KUCE], p["kod_kuce"])
+
+        # uvod i završetak se ne biraju ručno — uzme se prva rečenica koja se može popuniti
+        _v = _osvrt.vrijednosti(k, ime=ime, cilj=cilj_txt, rod=rod)
+        otv = _osvrt.prva(fraze, _osvrt.OTVARANJE, _v) or _osvrt.prva(fraze, _osvrt.OTVARANJE, {})
+        zav = _osvrt.prva(fraze, _osvrt.ZAVRSETAK, _v) or _osvrt.prva(fraze, _osvrt.ZAVRSETAK, {})
+
+        if st.button("🧩 Sastavi poruku", key=f"osv_sastavi_{uid}", type="primary"):
+            odabrane = ([otv] if otv else []) + _osvrt_odabrane(po_id, sel_dobro + sel_zapelo + sel_cilj + sel_kuce) \
+                + ([zav] if zav else [])
+            tekst_s, upoz = _osvrt.sastavi_tekst(k, odabrane, ime=ime, cilj=cilj_txt, rod=rod, duljina=duljina)
+            st.session_state[f"osv_tekst_{uid}"] = tekst_s
+            st.session_state[f"osv_fraze_{uid}"] = [f["fraza_id"] for f in odabrane]
+            st.session_state[f"osv_sastav_{uid}"] = upoz
+
+        for u_ in st.session_state.get(f"osv_sastav_{uid}", []):
+            st.warning(u_, icon="⚠️")
+        tekst = st.text_area("Poruka roditelju (možeš slobodno urediti)", key=f"osv_tekst_{uid}", height=180,
+                             placeholder="Označi rečenice i klikni „🧩 Sastavi poruku” — ili ovdje upiši svoj tekst.")
+
+        imena = [x for x in (imena_svi or ()) if _t_ime(x) != _t_ime(ime)]
+        blokira, upozorenja = _osvrt.provjeri_tekst(tekst, ime_ucenika=ime, druga_imena=imena)
+        for b in blokira:
+            st.error(b, icon="🚫")
+        for w in upozorenja:
+            st.warning(w, icon="⚠️")
+        if st.button("📤 Pošalji roditelju", key=f"osv_posalji_{uid}", disabled=bool(blokira),
+                     help="Poruka se upisuje u Napredak_poruke i odmah se vidi u Moj CAKI. Prije slanja je "
+                          "provjeri još jednom — nakon slanja roditelj je vidi."):
+            try:
+                _osvrt.posalji_poruku(_init_sheet(), ucenik_id=uid, ime_djeteta=ime, nastavnik=nastavnik,
+                                      tekst=tekst, predmet=str(u.get("predmet") or ""),
+                                      program="INSTRUKCIJE", razdoblje_od=od, razdoblje_do=do,
+                                      fraze=st.session_state.get(f"osv_fraze_{uid}", []), izvor="fraze")
+                for k_ in (f"osv_tekst_{uid}", f"osv_fraze_{uid}", f"osv_sastav_{uid}"):
+                    st.session_state.pop(k_, None)
+                _poruka("success", f"Osvrt poslan — {ime} ga vidi u Moj CAKI → 📈 Napredak.")
+            except ValueError as e_o:
+                _poruka("error", str(e_o))
+            st.cache_data.clear()
+            st.rerun()
+
+
+def _t_ime(v) -> str:
+    return str(v or "").strip().lower()
+
+
 def _moji_ucenici(nastavnik) -> pd.DataFrame:
     return ucenici_profesora(_ucitaj(DODJELE_TAB), _ucitaj("Učenici"), nastavnik, sada_zagreb().date())
 
@@ -478,6 +616,7 @@ def _kartica_moji_ucenici(nastavnik):
     if moji.empty:
         st.info("Nemate dodijeljenih učenika — javite adminu.")
         return
+    imena_moji = [str(x) for x in moji.get("ime_djeteta", [])]
     for _, u in moji.iterrows():
         with st.container(border=True):
             st.markdown(f"**{u['ime_djeteta']}** · {u['predmet'] or 'svi predmeti'}"
@@ -499,6 +638,7 @@ def _kartica_moji_ucenici(nastavnik):
                 with st.expander(f"📚 Povijest sati i obrađene teme ({len(povijest)})"):
                     st.caption("Svi dosadašnji sati ovog učenika (i kod drugih profesora, bez imena i plaćanja).")
                     st.dataframe(povijest, hide_index=True, width="stretch")
+            _blok_osvrt(nastavnik, u, imena_moji)
 
 
 # 21.10.2026. (Cakijev zahtjev): oblik plaćanja je obavezan na svakom upisu sata.
