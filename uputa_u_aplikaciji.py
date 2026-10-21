@@ -63,8 +63,8 @@ UPUTE = {
             "**✍️ Napiši roditelju** — odabereš razdoblje (zadano: od zadnje poruke), sustav pokaže "
             "brojke, ti označiš 3–5 rečenica i dopišeš cilj.",
             "**🧩 Sastavi poruku** složi tekst iz tvojih odabira. **Možeš ga slobodno urediti.**",
-            "**🤖 Sastavi ljepše (AI)**, ako je uključen, prepiše iste podatke ljepšim stilom — model "
-            "**ne dobiva ime djeteta**, ono se ubacuje u aplikaciji. Uvijek pregledaj prije slanja.",
+            "**🤖 Sastavi ljepše**, ako je uključeno, prepiše iste podatke ljepšim stilom. Ime djeteta se "
+            "nikad ne šalje izvan aplikacije. Uvijek pregledaj prije slanja — tekst je tvoj.",
             "**📤 Pošalji roditelju** — poruka ide u Moj CAKI → 📈 Napredak. Ne šalje se mailom ni "
             "WhatsAppom i **nikad ne odlazi sama**.",
         ],

@@ -140,9 +140,10 @@ from pipeline_upisi import (
 )
 
 
+import secrets_json as _sj  # 21.10.2026.: tolerantno čitanje JSON-a iz Secrets
 @st.cache_resource
 def _init_sheet():
-    sa_info = json.loads(st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"])
+    sa_info = _sj.ucitaj(st, "GOOGLE_SERVICE_ACCOUNT_JSON")
     return get_gspread_client(sa_info).open_by_key(st.secrets["SHEET_ID"])
 
 
@@ -174,7 +175,7 @@ def _popis_tema(predmet: str, stupanj: str) -> list:
     try:
         if not kljuc or not str(st.secrets.get(kljuc, "")).strip():
             return []
-        sa_info = json.loads(st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"])
+        sa_info = _sj.ucitaj(st, "GOOGLE_SERVICE_ACCOUNT_JSON")
         baza = get_gspread_client(sa_info).open_by_key(str(st.secrets[kljuc]).strip())
         return _sat.popis_tema(_sat.ucitaj_sifrarnik(baza))
     except Exception:
@@ -566,7 +567,7 @@ def _blok_osvrt(nastavnik: str, u, imena_svi=()):
         # 21.10.2026.: 🤖 AI uglančavanje ISTIH podataka — model NE dobiva ime (v. komentar_ai.py).
         # Gumb se prikaže samo kad je ključ u Secrets, pa ništa ne puca dok ga Caki ne postavi.
         if _ai.ima_kljuc(st):
-            if st.button("🤖 Sastavi ljepše (AI)", key=f"osv_ai_btn_{uid}",
+            if st.button("🤖 Sastavi ljepše", key=f"osv_ai_btn_{uid}",
                          help="Model prepiše iste podatke i tvoje odabrane rečenice ljepšim stilom. "
                               "Ne dobiva ime djeteta — ono se ubacuje ovdje, u aplikaciji. Ti pregledaš i "
                               "možeš urediti prije slanja."):
@@ -586,14 +587,14 @@ def _blok_osvrt(nastavnik: str, u, imena_svi=()):
                     _poruka("error", f"AI nije odgovorio: {e_ai}")
                     st.rerun()
         else:
-            st.caption("🤖 Gumb „Sastavi ljepše” prikaže se kad se u Secrets doda `ANTHROPIC_API_KEY`.")
+            st.caption("🤖 Gumb „Sastavi ljepše” prikaže se kad je u Secrets postavljen ključ.")
 
         ai_info = st.session_state.get(f"osv_ai_{uid}") or {}
         for w_ai in ai_info.get("upozorenja", []):
             st.warning(w_ai, icon="🤖")
         if ai_info.get("tekst"):
-            st.caption(f"🤖 Sastavljeno modelom `{ai_info.get('model', '')}` iz tvojih podataka i odabranih "
-                       "rečenica — pregledaj prije slanja.")
+            st.caption("🤖 Sastavljeno uz pomoć iz tvojih podataka i odabranih rečenica — pregledaj prije "
+                       "slanja, tekst je tvoj.")
 
         imena = [x for x in (imena_svi or ()) if _t_ime(x) != _t_ime(ime)]
         blokira, upozorenja = _osvrt.provjeri_tekst(tekst, ime_ucenika=ime, druga_imena=imena)
@@ -609,7 +610,7 @@ def _blok_osvrt(nastavnik: str, u, imena_svi=()):
                                       tekst=tekst, predmet=str(u.get("predmet") or ""),
                                       program="INSTRUKCIJE", razdoblje_od=od, razdoblje_do=do,
                                       fraze=st.session_state.get(f"osv_fraze_{uid}", []),
-                                      izvor="ai" if (st.session_state.get(f"osv_ai_{uid}") or {}).get("tekst")
+                                      izvor="pomoc" if (st.session_state.get(f"osv_ai_{uid}") or {}).get("tekst")
                                       else "fraze",
                                       model=(st.session_state.get(f"osv_ai_{uid}") or {}).get("model", ""))
                 for k_ in (f"osv_tekst_{uid}", f"osv_fraze_{uid}", f"osv_sastav_{uid}", f"osv_ai_{uid}"):

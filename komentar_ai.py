@@ -161,8 +161,8 @@ def pripremi_odgovor(sirovi_tekst: str, ime_ucenika: str = "", rod: str = "") ->
     tekst = ubaci_ime(sirovi, ime_ucenika)
     upozorenja = []
     if lose:
-        upozorenja.append("Model je ime stavio u kosi padež (npr. „s {ime}”) — ime se ubacuje doslovno, "
-                          "pa provjeri tu rečenicu i preformuliraj (npr. „{ime} je…”).")
+        upozorenja.append("Ime je u kosom padežu (npr. „s {ime}”) — ime se ubacuje doslovno, pa tu "
+                          "rečenicu preformuliraj (npr. „{ime} je…”).")
     if "{" in tekst and "}" in tekst:
         upozorenja.append("U tekstu je ostalo neko polje u vitičastim zagradama — popuni ga.")
     return {"tekst": tekst, "upozorenja": upozorenja, "padez_los": lose}
@@ -212,7 +212,7 @@ def sastavi(payload: dict, ime_ucenika: str = "", rod: str = "", pozovi=None, ko
     if odg.get("odrezano"):
         upozorenja.append("Odgovor je odrezan (max_tokens) — tekst može biti nedovršen.")
     if not pr["tekst"]:
-        upozorenja.append("Model nije vratio tekst — pokušaj ponovno ili napiši sam.")
+        upozorenja.append("Nema teksta — pokušaj ponovno ili napiši sam.")
     return {"tekst": pr["tekst"], "upozorenja": upozorenja, "padez_los": pr["padez_los"],
             "model": MODEL, "tokeni_ulaz": odg.get("tokeni_ulaz", 0),
             "tokeni_izlaz": odg.get("tokeni_izlaz", 0), "odrezano": bool(odg.get("odrezano"))}

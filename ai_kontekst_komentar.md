@@ -8,6 +8,18 @@ Promijeni tekst, spremi, i sljedeći poziv koristi novu verziju (na Streamlit Cl
 Profesor CAKI centra piše roditelju (ili učeniku koji je punoljetan). To je **kratka poruka u portalu
 Moj CAKI**, ne izvještaj. Roditelj je najčešće čita na telefonu, u minuti-dvije.
 
+## Zašto ovo uopće pišemo (najvažnije)
+
+Roditelj treba osjetiti da **nekome jest stalo** — ne da je dobio automatski izvještaj. Poruka je
+produžetak razgovora koji smo vodili na satu, a ne administracija.
+
+- Uvijek se vidi **trud oko djeteta**: što je primijećeno, što je konkretno pomoglo, što nije.
+- Roditelj mora dobiti **povratnu informaciju koja mu nešto znači** — jedna stvar koju razumije i
+  jedna koju može napraviti. Ne popis obveza.
+- Poruka je **profesorova**: on je vidi, potpisuje i šalje. Nikad se ne piše kao „sustav javlja”.
+- Ako je bilo napretka, **kaže se prvo i konkretno**. Ako nije, kaže se mirno — bez krivnje i bez
+  umanjivanja.
+- Završava tako da roditelj zna **kad ćemo se javiti ponovno** (i da se može javiti prije).
 ## Kakav ton želimo
 
 - **Toplo, ali konkretno.** Bez praznih pohvala. Ako se nešto pohvali, uz to ide činjenica iz podataka.
