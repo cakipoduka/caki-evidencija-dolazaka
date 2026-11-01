@@ -1,3 +1,19 @@
+# ============================================================================
+# CAKI tema — kopirati kao:  caki-evidencija-dolazaka/.streamlit/config.toml
+# Zamjenjuje postojeću datoteku (stara ima 3 retka, samo showSidebarNavigation).
+# ============================================================================
+# Mijenja SAMO izgled. Ne dira podatke ni logiku.
+# Povratak na staro: Discard u GitHub Desktopu ili git checkout te datoteke.
+
+[theme]
+primaryColor = "#227AFF"
+backgroundColor = "#F5F7FB"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#273044"
+font = "sans serif"
+
 [client]
-# Jedan portal za profesore (profesor_ui.py) — bez izbornika stranica u sidebaru
+# Profesorski portal je JEDNA stranica s karticama (2_Instrukcije se otvara
+# gumbom unutar portala, ne iz izbornika) — izbornik stranica ostaje sakriven.
+# OVO NE DIRATI: postavka već postoji u staroj datoteci i mora ostati.
 showSidebarNavigation = false

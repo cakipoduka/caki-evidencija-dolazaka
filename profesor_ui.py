@@ -52,6 +52,7 @@ import sat_biljeska as _sat
 import komentar_napretka as _osvrt   # 21.10.2026.: ✍️ osvrt roditelju (baza fraza, bez AI-a)
 import komentar_ai as _ai            # 21.10.2026.: 🤖 „Sastavi ljepše" na iste fraze (opcionalno)
 import uputa_u_aplikaciji as _uputa  # 21.10.2026.: upute UNUTAR portala (sklopivi blok)
+import caki_stil as stil             # 31.10.2026.: CAKI tema (jedna datoteka)
 
 from pipeline_upisi import (
     DODJELE_TAB,
@@ -1547,6 +1548,7 @@ def _siri_stranicu():
 
 
 def prikazi_portal_profesora():
+    stil.primijeni()   # 31.10.2026.: CAKI tema — mora biti prije ijednog elementa
     _siri_stranicu()
     sheet = _init_sheet()
     nastavnik = _prijava()
