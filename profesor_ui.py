@@ -1541,6 +1541,80 @@ def _kartica_kalendar():
     st.link_button("↗ Otvori u Google kalendaru", "https://calendar.google.com/calendar/r")
 
 
+# ------------------------------------------------------------------ ✅ Zadaci od admina (2.11.2026.)
+
+_BOJE_HITNOSTI = {"Hitno": ("#fde2e1", "#9b1c14"), "Važno": ("#fff0e0", "#8a4207"),
+                  "Normalno": ("#e4f3ea", "#1b6b3d"), "Kad stignemo": ("#e6effb", "#174f92")}
+
+
+def _moji_zadaci(nastavnik) -> pd.DataFrame:
+    """Samo zadaci u kojima je ovaj profesor naveden (admin ga odabere u „Za koga”)."""
+    import pipeline_upisi as _pz
+    df = _ucitaj(_pz.ZADACI_TAB)
+    if df is None or df.empty or "za" not in df.columns:
+        return pd.DataFrame(columns=_pz.ZADACI_HEADERS)
+    for h in _pz.ZADACI_HEADERS:
+        if h not in df.columns:
+            df[h] = ""
+        df[h] = df[h].astype(str).replace({"nan": "", "None": ""})
+    df = df[df["skriveno"].str.strip().str.lower() != "da"]
+    return _pz.poredaj_zadatke(_pz.zadaci_za(df, osoba=nastavnik))
+
+
+def _broj_mojih_zadataka(nastavnik) -> int:
+    try:
+        d = _moji_zadaci(nastavnik)
+        return int((d["status"] != "Gotovo").sum())
+    except Exception:
+        return 0
+
+
+def _oznaci_moj_zadatak(sheet, zid, kljuc, nastavnik):
+    import pipeline_upisi as _pz
+    try:
+        _pz.oznaci_zadatak(sheet, zid, bool(st.session_state.get(kljuc)), nastavnik)
+    except ValueError as e:
+        _poruka("error", str(e))
+    st.cache_data.clear()
+
+
+def _kartica_zadaci(sheet, nastavnik):
+    import html as _html_mod
+    import pipeline_upisi as _pz
+    st.caption("Zadaci koje su ti zadali Caki ili Neira. Kad ga odradiš, označi kvačicom — oni to odmah vide.")
+    d = _moji_zadaci(nastavnik)
+    otv, got = d[d["status"] != "Gotovo"], d[d["status"] == "Gotovo"]
+    if otv.empty:
+        st.info("Nemaš otvorenih zadataka. 🎉")
+
+    def redak(r, gotov):
+        c1, c2 = st.columns([0.06, 0.94], vertical_alignment="top")
+        k = f"pz_cb_{r['zadatak_id']}"
+        st.session_state[k] = gotov
+        c1.checkbox("Gotovo", key=k, label_visibility="collapsed", on_change=_oznaci_moj_zadatak,
+                    args=(sheet, r["zadatak_id"], k, nastavnik))
+        poz, boja = _BOJE_HITNOSTI.get(r.get("hitnost", ""), ("#eceff3", "#2b3445"))
+        meta = [f'<span style="background:{poz};color:{boja};font-weight:600;font-size:12px;padding:2px 8px;'
+                f'border-radius:999px">{_html_mod.escape(r.get("hitnost", ""))}</span>']
+        if r.get("kreirao"):
+            meta.append(f'od {_html_mod.escape(r["kreirao"])}')
+        if r.get("rok"):
+            meta.append(("⚠️ kasni · " if _pz.zadatak_kasni(r) else "") + f'rok {str(r["rok"])[8:10]}.{str(r["rok"])[5:7]}.')
+        if r.get("ime_djeteta"):
+            meta.append(f'👤 {_html_mod.escape(r["ime_djeteta"])}')
+        stil_t = "opacity:.6;text-decoration:line-through" if gotov else ""
+        c2.markdown(f'<div style="font-size:15px;{stil_t}">{_html_mod.escape(r.get("tekst", ""))}</div>'
+                    f'<div style="font-size:12px;color:#5a6375;margin-top:3px">{" · ".join(meta)}</div>',
+                    unsafe_allow_html=True)
+
+    for _, r in otv.iterrows():
+        redak(r.to_dict(), False)
+    if not got.empty:
+        with st.expander(f"✓ Gotovo ({len(got)})"):
+            for _, r in got.head(30).iterrows():
+                redak(r.to_dict(), True)
+
+
 def _siri_stranicu():
     """Širi sadržaj (layout="wide" + manji bočni razmaci) da tablice i popisi stanu pregledno."""
     st.markdown("<style>.block-container{max-width:100%!important;padding-left:2rem!important;"
@@ -1587,6 +1661,8 @@ def prikazi_portal_profesora():
     radi = {p_: nastavnik_radi_program(df_n_prog, nastavnik, p_) for p_ in PROGRAMI_NASTAVNIKA}
     naziv_upiti = f"📥 Novi upiti ({n_upita})" if n_upita else "📥 Novi upiti"
     redom = [("🏠 Danas", _kartica_danas, True)]
+    n_zad = _broj_mojih_zadataka(nastavnik)   # 2.11.2026.: zadaci od admina
+    redom += [(f"✅ Zadaci ({n_zad})" if n_zad else "✅ Zadaci", _kartica_zadaci, True)]
     if radi["Instrukcije"]:
         redom += [(naziv_upiti, _kartica_upiti, True), ("🗓️ Dostupnost", _kartica_dostupnost, True)]
     if radi["Upisi"]:
