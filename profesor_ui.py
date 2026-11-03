@@ -1390,7 +1390,7 @@ def _kartica_dostupnost(sheet, nastavnik):
 
 # ------------------------------------------------------------------ 🏠 danas (12.10.2026.)
 
-def _kartica_danas(nastavnik):
+def _kartica_danas(nastavnik, tip: str = "instrukcije"):
     """Početni pregled: što je danas, što čeka upis i do kada, status izvještaja. Samo čitanje."""
     _uputa.prikazi(st, "danas")
     danas = sada_zagreb().date()
@@ -1405,8 +1405,12 @@ def _kartica_danas(nastavnik):
 
     hitno = [k for k in kasne if k["preostalo_dana"] <= 3]
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("👥 Grupni sati danas", len(sati))
-    m2.metric("📝 Instrukcije danas", len(instr["danas"]))
+    if tip == "grupe":           # 4.11.2026.: profesor koji pretežno drži grupe — grupe prve
+        m1.metric("👥 Grupni sati danas", len(sati))
+        m2.metric("📝 Instrukcije danas", len(instr["danas"]))
+    else:                        # profesor koji pretežno drži instrukcije — instrukcije prve
+        m1.metric("📝 Instrukcije danas", len(instr["danas"]))
+        m2.metric("👥 Grupni sati danas", len(sati))
     m3.metric("⏳ Čeka upis", len(kasne) + len(instr["cekaju_status"]),
               help="Grupni sati bez zabilježenih dolazaka + instrukcije koje su još 'Zakazan', a datum je prošao.")
     m4.metric("🚨 Rok ističe za ≤ 3 dana", len(hitno),
@@ -1439,12 +1443,17 @@ def _kartica_danas(nastavnik):
         st.markdown("#### 📅 Danas")
         if not sati and not instr["danas"]:
             st.caption("Danas nemate upisanih grupnih sati ni instrukcija.")
-        for b in sati:
-            oznaka = "✅ zabilježeno" if b["zabiljezen"] else "⬜ još nije zabilježeno"
-            st.markdown(f"**{b['vrijeme']}** · {b['izvor']} · {b['naziv']} · uč. {b['ucionica']} — {oznaka}")
-        for r in instr["danas"]:
-            st.markdown(f"**📝 Instrukcije** · {r['ucenik']} · {r['predmet'] or '—'} · {r['min']} min · "
-                        f"{OZNAKE_STATUSA_TERMINA.get(r['status'], r['status'])}")
+        def _grupni():
+            for b in sati:
+                oznaka = "✅ zabilježeno" if b["zabiljezen"] else "⬜ još nije zabilježeno"
+                st.markdown(f"**{b['vrijeme']}** · {b['izvor']} · {b['naziv']} · uč. {b['ucionica']} — {oznaka}")
+
+        def _instr():
+            for r in instr["danas"]:
+                st.markdown(f"**📝 Instrukcije** · {r['ucenik']} · {r['predmet'] or '—'} · {r['min']} min · "
+                            f"{OZNAKE_STATUSA_TERMINA.get(r['status'], r['status'])}")
+        for dio in ((_grupni, _instr) if tip == "grupe" else (_instr, _grupni)):
+            dio()
         if instr["nadolazece"]:
             st.markdown("#### 🔜 Idućih 7 dana — zakazane instrukcije")
             for r in instr["nadolazece"]:
@@ -1797,19 +1806,45 @@ def _kartica_zadaci(sheet, nastavnik):
                 redak(r.to_dict(), True)
 
 
+def tip_profesora(radi: dict, n_ucenika: int, n_blokova: int) -> str:
+    """4.11.2026. (Caki): dvije vrste profesora — pretežno INSTRUKCIJE ili pretežno GRUPE (Matura/Upisi).
+    Po tome se slaže redoslijed kartica i što je prvo na 🏠 Danas. Čista funkcija.
+    · predaje samo instrukcije → „instrukcije”; nema instrukcija → „grupe”;
+    · oboje (ili prazan Nastavnici.programi) → što ima više: aktivnih učenika na instrukcijama ili
+      grupnih termina u tjednu (jedan učenik ≈ jedan sat tjedno, jedna grupa = jedan sat tjedno)."""
+    ins = bool(radi.get("Instrukcije"))
+    grupe = bool(radi.get("Matura")) or bool(radi.get("Upisi"))
+    if ins and not grupe:
+        return "instrukcije"
+    if grupe and not ins:
+        return "grupe"
+    return "grupe" if n_blokova > n_ucenika else "instrukcije"
+
+
+def _broj_mojih_blokova(nastavnik) -> int:
+    """Koliko grupnih termina (Matura + Upisi) profesor ima u tjednu. Greška → 0 (ne ruši portal)."""
+    try:
+        razdoblja, praznici = _razdoblja_i_praznici()
+        return len(_danas.moji_blokovi(_ucitaj("Grupe"), _ucitaj(naziv_taba_rasporeda_mature(SEZONA)),
+                                       razdoblja, praznici, nastavnik, _ucitaj(BLOKOVI_TAB)))
+    except Exception:                                   # noqa: BLE001
+        return 0
+
+
 def _siri_stranicu():
     """3.11.2026.: širinu i izgled sada daje caki_tema (kao CRM admin) — ovo ostaje radi kompatibilnosti."""
     return None
 
 
-def _zaglavlje_portala(nastavnik):
+def _zaglavlje_portala(nastavnik, chipovi: str = ""):
     """Pozdrav + brzi brojevi + Osvježi/Odjava (kao zaglavlje kartice učenika u CRM-u)."""
     with tema.kutija("pp_zaglavlje"):
         a, b = st.columns([4, 1.4], vertical_alignment="center")
         with a:
             danas = sada_zagreb().date()
             tema.html_(f'<div class="kc-pozdrav">CAKI portal za profesore · {_dan_datum(str(danas))}{danas.year}.</div>'
-                       f'<div class="kc-h1">🎓 {html_escape(nastavnik)}</div>')
+                       f'<div class="kc-h1">🎓 {html_escape(nastavnik)}</div>'
+                       + (f'<div class="kc-chips" style="margin-top:6px">{chipovi}</div>' if chipovi else ""))
         with b:
             with st.container(horizontal=True, horizontal_alignment="right"):
                 # 21.10.2026. (Cakijev zahtjev): podaci se čitaju iz Sheeta kroz cache — ovaj gumb ga isprazni.
@@ -1828,13 +1863,14 @@ def prikazi_portal_profesora():
     tema.primijeni()   # 3.11.2026.: tema kao CRM admin — mora biti prije ijednog elementa
     sheet = _init_sheet()
     nastavnik = _prijava()
-    _zaglavlje_portala(nastavnik)
-    if "_prof_poruka" in st.session_state:
-        vrsta, tekst = st.session_state.pop("_prof_poruka")
-        getattr(st, vrsta)(tekst)
     # 18.10.2026.: suradnik na modelu najma (npr. Slađana) vidi SAMO svoje termine i zauzetost —
     # nema pristup učenicima, dodjelama, instrukcijama ni financijama (Cakijeva odluka).
+    # Najmoprimac nema učenike ni grupe → zaglavlje bez brojeva.
     if je_najmoprimac(_ucitaj(PROFILI_PROFESORA_TAB), nastavnik):
+        _zaglavlje_portala(nastavnik)
+        if "_prof_poruka" in st.session_state:
+            vrsta, tekst = st.session_state.pop("_prof_poruka")
+            getattr(st, vrsta)(tekst)
         k = tema.nav(["🔑 Moji termini", "🏫 Zauzetost učionica", "📅 Kalendar centra"], "pp")
         {"🔑 Moji termini": lambda: _kartica_najam(sheet, nastavnik), "🏫 Zauzetost učionica": _kartica_zauzetost,
          "📅 Kalendar centra": _kartica_kalendar}[k]()
@@ -1847,18 +1883,33 @@ def prikazi_portal_profesora():
     # Vidi samo kartice svojih programa; prazan stupac Nastavnici.programi = vidi sve, kao dosad.
     radi = {p_: nastavnik_radi_program(df_n_prog, nastavnik, p_) for p_ in PROGRAMI_NASTAVNIKA}
     n_zad = _broj_mojih_zadataka(nastavnik)   # 2.11.2026.: zadaci od admina
+    # 4.11.2026. (Caki): instrukcije ili grupe — što je profesoru glavno ide prvo (kartice, Danas, zaglavlje)
+    n_ucenika = len(_moji_ucenici(nastavnik)) if radi["Instrukcije"] else 0
+    n_blokova = _broj_mojih_blokova(nastavnik) if (radi["Matura"] or radi["Upisi"]) else 0
+    tip = tip_profesora(radi, n_ucenika, n_blokova)
+    chipovi = []
+    if radi["Instrukcije"]:
+        chipovi.append(tema.chip(f"📝 Instrukcije: {n_ucenika} učenika", "b" if tip == "instrukcije" else ""))
+    if radi["Matura"] or radi["Upisi"]:
+        chipovi.append(tema.chip(f"👥 Grupe: {n_blokova} termina tjedno", "b" if tip == "grupe" else ""))
+    _zaglavlje_portala(nastavnik, " ".join(chipovi))
+    if "_prof_poruka" in st.session_state:
+        vrsta, tekst = st.session_state.pop("_prof_poruka")
+        getattr(st, vrsta)(tekst)
     # 3.11.2026. (Claude, redizajn): traka kartica od gumba — iscrtava se SAMO odabrana kartica
     # (prije st.tabs: svih 12 kartica se računalo na svaki klik → sporo i puno čitanja Sheeta).
     # Redoslijed po učestalosti: Danas → Učenici (upis termina) → Moji termini → grupe → ostalo.
-    redom = [("🏠 Danas", lambda: _kartica_danas(nastavnik))]
+    redom = [("🏠 Danas", lambda: _kartica_danas(nastavnik, tip))]
+    k_instr, k_grupe = [], []
     if radi["Instrukcije"]:
-        redom += [("👩‍🎓 Učenici", lambda: _kartica_ucenici(sheet, nastavnik, smije_gotovinu)),
-                  ("📋 Moji termini", lambda: _kartica_instrukcije(sheet, nastavnik, smije_gotovinu))]
+        k_instr = [("👩‍🎓 Učenici", lambda: _kartica_ucenici(sheet, nastavnik, smije_gotovinu)),
+                   ("📋 Moji termini", lambda: _kartica_instrukcije(sheet, nastavnik, smije_gotovinu))]
     if radi["Matura"]:
-        redom += [("🎓 Matura", lambda: _kartica_matura(sheet, nastavnik))]
+        k_grupe += [("🎓 Matura", lambda: _kartica_matura(sheet, nastavnik))]
     if radi["Upisi"]:
-        redom += [("👥 Grupe", lambda: _kartica_dolasci(sheet, nastavnik)),
-                  ("🧩 Blokovi", lambda: _kartica_blokovi(sheet, nastavnik))]
+        k_grupe += [("👥 Grupe", lambda: _kartica_dolasci(sheet, nastavnik)),
+                    ("🧩 Blokovi", lambda: _kartica_blokovi(sheet, nastavnik))]
+    redom += (k_grupe + k_instr) if tip == "grupe" else (k_instr + k_grupe)
     redom += [(f"✅ Zadaci ({n_zad})" if n_zad else "✅ Zadaci", lambda: _kartica_zadaci(sheet, nastavnik))]
     if radi["Instrukcije"]:
         redom += [(f"📥 Novi upiti ({n_upita})" if n_upita else "📥 Novi upiti", lambda: _kartica_upiti(sheet, nastavnik)),
