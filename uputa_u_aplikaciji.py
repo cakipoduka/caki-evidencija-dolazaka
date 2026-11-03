@@ -22,22 +22,23 @@ UPUTE = {
             "**⏳ Čeka upis** = sat je bio, a nije zabilježen. Upisati se može **14 dana** unatrag; "
             "poslije toga upisuje admin (🚨 znači da je rok pri kraju).",
             "**📝 Instrukcije bez konačnog statusa** = datum je prošao, a termin je još „Zakazan”. "
-            "Označi Održan / Otkazan u kartici 📝 Instrukcije.",
+            "Označi Održan / Otkazan na kartici učenika (👩‍🎓 Učenici) ili u 📋 Moji termini.",
             "**✍️ Osvrt roditelju čeka …** = učenici kojima je vrijeme za kratki osvrt (jednom u "
-            "4 tjedna). Otvori 👩‍🎓 Moji učenici → ✍️ Napiši roditelju.",
+            "4 tjedna). Otvori 👩‍🎓 Učenici → učenik → ✍️ Napiši roditelju.",
             "**📄 Mjesečni izvještaj** šalješ nakon završetka mjeseca — status piše na dnu.",
         ],
         "pazi": [
             "Ovo je samo pregled — ništa se ovdje ne mijenja i ne upisuje.",
             "Ako ti nešto ne odgovara stvarnom stanju, prvo klikni **🔄 Osvježi** gore desno.",
         ],
-        "dalje": "Iduće kartice: 📝 Instrukcije (upis sata) · 👩‍🎓 Moji učenici (osvrt roditelju) · 📄 Izvještaj.",
+        "dalje": "Iduće kartice: 👩‍🎓 Učenici (kartica učenika: upis sata, osvrt roditelju) · 📋 Moji termini · 📄 Izvještaj.",
     },
 
     "instrukcije": {
-        "naslov": "Kako upisati sat (📝 Instrukcije)",
+        "naslov": "Kako upisati i urediti sat (👩‍🎓 Učenici · 📋 Moji termini)",
         "koraci": [
-            "U izborniku **Učenik** odaberi učenika — obrazac se otvara tek nakon odabira.",
+            "Novi sat upisuješ na **kartici učenika**: 👩‍🎓 Učenici → odaberi učenika → **➕ Upiši termin**. "
+            "U 📋 Moji termini su svi tvoji termini (ugovoreni, održani, ispravak, bilješke).",
             "**Datum / Vrijeme / Trajanje**: vrijeme biraš iz popisa (svakih 15 min), ne upisuješ.",
             "**Oblik**: Individualno / Grupa / Online. Ako je Grupa, upiši koliko ih je.",
             "**Plaćanje je obavezno** — 💵 Gotovina (platio ti na satu) ili ❌ Nije plaćeno (ide na obračun). "
@@ -56,8 +57,10 @@ UPUTE = {
     },
 
     "moji_ucenici": {
-        "naslov": "Kako radi 👩‍🎓 Moji učenici (i ✍️ osvrt roditelju)",
+        "naslov": "Kako radi 👩‍🎓 Učenici — kartica učenika (i ✍️ osvrt roditelju)",
         "koraci": [
+            "Odaberi učenika u izborniku ili klikni njegovu pločicu — otvara se **kartica učenika**: "
+            "➕ upis termina, 📅 ugovoreni termini („Što je bilo?”), 📚 povijest i ✍️ osvrt roditelju na jednom mjestu.",
             "Ovdje su **samo učenici koje ti je admin dodijelio**. Kontakt vidiš samo ako je dopušten.",
             "**📚 Povijest sati** pokazuje sve sate tog učenika (i kod kolega, bez imena i bez plaćanja).",
             "**✍️ Napiši roditelju** — odabereš razdoblje (zadano: od zadnje poruke), sustav pokaže "
@@ -77,7 +80,7 @@ UPUTE = {
     },
 
     "dolasci": {
-        "naslov": "Kako zabilježiti dolaske na grupi (✅ Dolasci — grupe)",
+        "naslov": "Kako zabilježiti dolaske na grupi (👥 Grupe)",
         "koraci": [
             "Odaberi **svoju grupu** i datum sata.",
             "Označi prisutne (i, ako je bilo, gosta iz druge grupe — „➕ Dodaj gosta”).",

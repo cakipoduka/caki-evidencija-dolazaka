@@ -52,7 +52,8 @@ import sat_biljeska as _sat
 import komentar_napretka as _osvrt   # 21.10.2026.: ✍️ osvrt roditelju (baza fraza, bez AI-a)
 import komentar_ai as _ai            # 21.10.2026.: 🤖 „Sastavi ljepše" na iste fraze (opcionalno)
 import uputa_u_aplikaciji as _uputa  # 21.10.2026.: upute UNUTAR portala (sklopivi blok)
-import caki_stil as stil             # 31.10.2026.: CAKI tema (jedna datoteka)
+import caki_stil as stil             # 31.10.2026.: CAKI tema (jedna datoteka)  # noqa: F401
+import caki_tema as tema             # 3.11.2026.: tema kao CRM admin (IBM Plex Sans) + traka kartica
 
 from pipeline_upisi import (
     DODJELE_TAB,
@@ -479,7 +480,7 @@ def _osvrt_odabrane(po_id: dict, polja: list) -> list:
 
 
 def _blok_osvrt(nastavnik: str, u, imena_svi=()):
-    """✍️ Napiši roditelju — unutar kartice učenika (👩‍🎓 Moji učenici)."""
+    """✍️ Napiši roditelju — unutar kartice učenika (👩‍🎓 Učenici)."""
     uid = str(u["ucenik_id"])
     df_poruke = _poruke_osvrta()
     zadnja = _osvrt.zadnja_poruka(df_poruke, uid)
@@ -683,6 +684,174 @@ def _kartica_moji_ucenici(nastavnik):
             _blok_osvrt(nastavnik, u, imena_moji)
 
 
+# ------------------------------------------------------------------ 👩‍🎓 Učenici (3.11.2026.) — učenik je centar
+
+_DANI = ("pon", "uto", "sri", "čet", "pet", "sub", "ned")
+
+
+def _dan_datum(v) -> str:
+    """'2026-11-06' → 'pet 6.11.'"""
+    try:
+        d = date.fromisoformat(str(v)[:10])
+    except (ValueError, TypeError):
+        return str(v or "")[:10]
+    return f"{_DANI[d.weekday()]} {d.day}.{d.month}."
+
+
+def sazetak_ucenika(df_instr: pd.DataFrame, nastavnik: str, uid: str, danas=None) -> dict:
+    """Za pločicu i zaglavlje učenika: sljedeći ugovoreni termin, zadnji održani sat (kod mene),
+    broj mojih sati i čeka li zadaća provjeru. Čista funkcija (bez Streamlita)."""
+    danas = danas or sada_zagreb().date()
+    out = {"sljedeci": None, "zadnji": None, "broj_sati": 0, "ceka_potvrdu": 0}
+    if df_instr is None or df_instr.empty or "ucenik_id" not in df_instr.columns:
+        return out
+    t = df_instr[(df_instr["ucenik_id"].astype(str) == str(uid)) & (df_instr.get("nastavnik", "") == nastavnik)]
+    if t.empty:
+        return out
+    st_t = t["status_termina"].fillna("").astype(str) if "status_termina" in t.columns else pd.Series([""] * len(t), index=t.index)
+    d = t["datum"].astype(str).str[:10]
+    zak = t[(st_t == "Zakazan") & (d >= str(danas))]
+    if not zak.empty:
+        r = zak.assign(_d=d).sort_values(["_d", "vrijeme"] if "vrijeme" in zak.columns else ["_d"]).iloc[0]
+        out["sljedeci"] = {"datum": str(r["datum"])[:10], "vrijeme": str(r.get("vrijeme", "") or ""),
+                           "predmet": str(r.get("predmet", "") or "")}
+    out["ceka_potvrdu"] = int(((st_t == "Zakazan") & (d < str(danas))).sum())
+    odr = t[~st_t.isin(["Zakazan", "Otkazan na vrijeme"])]
+    out["broj_sati"] = len(odr)
+    if not odr.empty:
+        r = odr.assign(_d=d).sort_values("_d").iloc[-1]
+        out["zadnji"] = {"datum": str(r["datum"])[:10], "predmet": str(r.get("predmet", "") or ""),
+                         "teme": str(r.get("teme", "") or "").replace(" ; ", ", ")}
+    return out
+
+
+def _chipovi_ucenika(saz: dict, zadaca) -> str:
+    c = []
+    if saz["sljedeci"]:
+        s_ = saz["sljedeci"]
+        c.append(tema.chip(f"Sljedeći: {_dan_datum(s_['datum'])} {s_['vrijeme']}".strip(), "b"))
+    if saz["ceka_potvrdu"]:
+        c.append(tema.chip(f"Čeka „Što je bilo?”: {saz['ceka_potvrdu']}", "o"))
+    if zadaca:
+        c.append(tema.chip("📝 Provjeri zadaću", "o"))
+    if saz["zadnji"]:
+        c.append(tema.chip(f"Zadnji sat: {_dan_datum(saz['zadnji']['datum'])}"))
+    return " ".join(c)
+
+
+def _otvori_ucenika(oznaka: str):
+    st.session_state["instr_ucenik"] = oznaka
+
+
+def _plocice_ucenika(opcije: dict, df_instr, nastavnik):
+    """Kad učenik nije odabran: pregled svih mojih učenika (pločice), klik → kartica učenika."""
+    stupci = st.columns(3, gap="medium")
+    for i, (oznaka, u) in enumerate(opcije.items()):
+        saz = sazetak_ucenika(df_instr, nastavnik, u["ucenik_id"])
+        zad = _sat.zadaca_na_cekanju(df_instr, u["ucenik_id"])
+        with stupci[i % 3]:
+            with tema.kutija(f"uc_{i}"):
+                tema.html_(f'<div class="kc-h3">{html_escape(u["ime_djeteta"])}</div>'
+                           f'<div class="kc-muted kc-small">{html_escape(u["predmet"] or "svi predmeti")}'
+                           + (f' · {html_escape(u["skola"])}' if u["skola"] else "") + '</div>'
+                           f'<div class="kc-chips" style="margin-top:6px">{_chipovi_ucenika(saz, zad)}</div>')
+                st.button("Otvori karticu →", key=f"pp_otvori_{i}", type="tertiary",
+                          on_click=_otvori_ucenika, args=(oznaka,))
+
+
+def _zaglavlje_ucenika(u, saz, zadaca):
+    with tema.kutija("uc_zaglavlje"):
+        a, b = st.columns([3, 2], vertical_alignment="top")
+        with a:
+            tema.html_(f'<div class="kc-h1">{html_escape(u["ime_djeteta"])}</div>'
+                       f'<div class="kc-chips" style="margin:8px 0 4px">'
+                       + tema.chip(u["predmet"] or "svi predmeti", "b")
+                       + (tema.chip(u["skola"]) if u["skola"] else "") + " " + _chipovi_ucenika(saz, zadaca)
+                       + '</div>')
+            if u["napomena_za_profesora"]:
+                st.caption(f"📌 {u['napomena_za_profesora']}")
+        with b:
+            if u["kontakt_dopusten"] == "Da":
+                c1, c2 = st.columns(2)
+                if u["mobitel_roditelja"]:
+                    c1.link_button(f"📲 Roditelj {u['ime_roditelja']}".strip(), whatsapp_link("", u["mobitel_roditelja"]))
+                    c1.caption(f"📞 {u['mobitel_roditelja']}")
+                if u["mobitel_djeteta"]:
+                    c2.link_button("📲 Učenik", whatsapp_link("", u["mobitel_djeteta"]))
+                    c2.caption(f"📞 {u['mobitel_djeteta']}")
+            else:
+                st.caption("🔒 Kontakt nije dopušten — termin dogovara admin.")
+
+
+def _kartica_ucenici(sheet, nastavnik, smije_gotovinu):
+    """👩‍🎓 Učenici — popis mojih učenika; odabirom se otvara kartica učenika: zaglavlje, ➕ upis termina,
+    ugovoreni i održani termini, povijest i teme, osvrt roditelju (sve na jednom mjestu)."""
+    _uputa.prikazi(st, "moji_ucenici")
+    moji = _moji_ucenici(nastavnik)
+    if moji.empty:
+        st.info("Nemate dodijeljenih učenika, pa ne možete upisati termin. Admin vas povezuje s učenikom. "
+                "Javite se adminu.")
+        return
+    df_instr = _ucitaj("Instrukcije_termini")
+    ima_status = "status_termina" in df_instr.columns
+    opcije = _opcije_ucenika(moji)
+    if st.session_state.get("instr_ucenik") not in [ODABERI_UCENIKA] + list(opcije):
+        st.session_state["instr_ucenik"] = ODABERI_UCENIKA
+    u_c1, u_c2 = st.columns([2, 3], vertical_alignment="bottom")
+    odabir_u = u_c1.selectbox("Učenik (samo vaši)", options=[ODABERI_UCENIKA] + list(opcije), key="instr_ucenik")
+    if odabir_u == ODABERI_UCENIKA:
+        u_c2.caption("Odaberite učenika da biste upisali termin — ili kliknite karticu ispod.")
+        st.caption("Učenici koje vam je dodijelio admin. Kontakt vidite samo kad je dopušten (za prvi dogovor). "
+                   "Podatke ne prepisujte u privatni imenik i ne dijelite ih dalje.")
+        _plocice_ucenika(opcije, df_instr, nastavnik)
+        return
+    u_c2.button("← Svi moji učenici", key="pp_svi_ucenici", type="tertiary",
+                on_click=_otvori_ucenika, args=(ODABERI_UCENIKA,))
+    u = opcije[odabir_u]
+    saz = sazetak_ucenika(df_instr, nastavnik, u["ucenik_id"])
+    zadaca = _sat.zadaca_na_cekanju(df_instr, u["ucenik_id"])
+    _zaglavlje_ucenika(u, saz, zadaca)
+
+    lijevo, desno = st.columns([3, 2], gap="medium")
+    with lijevo:
+        with tema.kutija("uc_upis"):
+            tema.html_('<div class="kc-h3">➕ Upiši termin</div>')
+            _obrazac_termina(sheet, nastavnik, smije_gotovinu, u, df_instr, ima_status)
+    with desno:
+        with tema.kutija("uc_ugovoreno"):
+            if df_instr.empty or "nastavnik" not in df_instr.columns:
+                tema.html_('<div class="kc-h3">📅 Ugovoreni termini</div><div class="kc-prazno">Nema ugovorenih termina.</div>')
+            else:
+                moji_u = df_instr[(df_instr["nastavnik"] == nastavnik)
+                                  & (df_instr["ucenik_id"].astype(str) == str(u["ucenik_id"]))]
+                if ima_status and (moji_u.get("status_termina", pd.Series(dtype=str)) == "Zakazan").any():
+                    _ugovoreni_termini(sheet, nastavnik, smije_gotovinu, moji_u)
+                else:
+                    tema.html_('<div class="kc-h3">📅 Ugovoreni termini</div>'
+                               '<div class="kc-prazno">Nema ugovorenih termina — upiši ga kao 📅 Zakazan.</div>')
+        with tema.kutija("uc_povijest"):
+            povijest = _sat.povijest_ucenika(df_instr, u["ucenik_id"])
+            tema.html_(f'<div class="kc-h3">📚 Povijest sati i teme ({len(povijest)})</div>'
+                       '<div class="kc-muted kc-small">Svi dosadašnji sati ovog učenika (i kod drugih profesora, '
+                       'bez imena i plaćanja).</div>')
+            if povijest.empty:
+                tema.html_('<div class="kc-prazno">Još nema održanih sati.</div>')
+            else:
+                st.dataframe(povijest.head(8), hide_index=True, width="stretch")
+                if len(povijest) > 8:
+                    with st.expander(f"Svi sati ({len(povijest)})"):
+                        st.dataframe(povijest, hide_index=True, width="stretch")
+        with tema.kutija("uc_osvrt"):
+            _blok_osvrt(nastavnik, u, [str(x) for x in moji.get("ime_djeteta", [])])
+    with tema.kutija("uc_termini"):
+        _pregled_termina(sheet, nastavnik, smije_gotovinu, df_instr, ima_status, uid=u["ucenik_id"], dio="ostalo")
+
+
+def html_escape(v) -> str:
+    import html as _h
+    return _h.escape(str(v or ""))
+
+
 # 21.10.2026. (Cakijev zahtjev): oblik plaćanja je obavezan na svakom upisu sata.
 PLACANJE_GOTOVINA = "💵 Gotovina"
 PLACANJE_NEPLACENO = "❌ Nije plaćeno"
@@ -811,137 +980,137 @@ def _blok_ispravak_termina(sheet, nastavnik, moji_t, ima_status):
                 st.rerun()
 
 
-def _kartica_instrukcije(sheet, nastavnik, smije_gotovinu):
-    _uputa.prikazi(st, "instrukcije")
-    df_instr = _ucitaj("Instrukcije_termini")
-    ima_status = "status_termina" in df_instr.columns
-    st.markdown("#### Novi termin")
-    moji = _moji_ucenici(nastavnik)
-    if moji.empty:
-        st.info("Nemate dodijeljenih učenika, pa ne možete upisati termin. Admin vas povezuje s učenikom "
-                "(👩‍🎓 Moji učenici). Javite se adminu.")
-    else:
-        # 21.10.2026. (Cakijev zahtjev): u izborniku na početku NE stoji ime nekog učenika —
-        # prvo piše „— unesi učenika —”, pa se tek odabirom otvara ostatak obrasca.
-        opcije = _opcije_ucenika(moji)
-        u_c1, _u_c2 = st.columns([2, 3])          # uži izbornik, ne preko cijele širine
-        odabir_u = u_c1.selectbox("Učenik (samo vaši)", options=[ODABERI_UCENIKA] + list(opcije),
-                                  key="instr_ucenik")
-    if not moji.empty and odabir_u == ODABERI_UCENIKA:
-        st.caption("Odaberite učenika da biste upisali termin.")
-    elif not moji.empty:
-        u = opcije[odabir_u]
-        uid, ime = u["ucenik_id"], u["ime_djeteta"]
-        zadani_predmet = (u["predmet"].split(", ")[0] if u["predmet"] else "")
-        _blok_zadaca_na_cekanju(sheet, nastavnik, uid, "novi", df_instr)
-        with st.form("novi_termin_form", clear_on_submit=True):
-            if ima_status:
-                status = st.radio("Termin", STATUSI_TERMINA, horizontal=True, format_func=OZNAKE_STATUSA_TERMINA.get,
-                                  help=f"📅 Zakazan = budući termin (podsjetnik roditelju šalje admin dan prije). "
-                                       f"Otkazivanje kasnije od {OTKAZ_SATI} h ili nedolazak se naplaćuje.")
+def _obrazac_termina(sheet, nastavnik, smije_gotovinu, u, df_instr, ima_status):
+    """➕ Upis termina za JEDNOG učenika (3.11.2026.: obrazac je na kartici učenika — učenik je centar)."""
+    uid, ime = u["ucenik_id"], u["ime_djeteta"]
+    zadani_predmet = (u["predmet"].split(", ")[0] if u["predmet"] else "")
+    _blok_zadaca_na_cekanju(sheet, nastavnik, uid, "novi", df_instr)
+    # 3.11.2026.: NE clear_on_submit — kad spremanje padne na provjeri (npr. nije označeno plaćanje),
+    # profesor ne smije izgubiti sve upisano. Nakon USPJEŠNOG spremanja obrazac se isprazni (novi ključ).
+    with st.form(f"novi_termin_form_{st.session_state.get('pp_forma_n', 0)}", border=False):
+        if ima_status:
+            status = st.radio("Termin", STATUSI_TERMINA, horizontal=True, format_func=OZNAKE_STATUSA_TERMINA.get,
+                              help=f"📅 Zakazan = budući termin (podsjetnik roditelju šalje admin dan prije). "
+                                   f"Otkazivanje kasnije od {OTKAZ_SATI} h ili nedolazak se naplaćuje.")
+        else:
+            status = "Održan"
+        # 21.10.2026.: kompaktnije — polja u stupcima, vrijeme iz izbornika (15 min, 8:00-21:30),
+        # a „Oblik” i „Broj učenika u grupi” u istom redu (Cakijeve oznake na snimci zaslona).
+        c1, c2, c3 = st.columns([2, 1, 1])
+        datum = c1.date_input("Datum", value=sada_zagreb().date(), format="DD.MM.YYYY")
+        vrijeme = c2.selectbox("Vrijeme", options=[""] + VREMENA_TERMINA,
+                               format_func=lambda v: v or "—") if ima_status else ""
+        duljina = c3.selectbox("Trajanje (min)", options=INSTRUKCIJE_TRAJANJA, index=1)
+        c4, c5 = st.columns(2)
+        predmet = c4.selectbox("Predmet", options=INSTRUKCIJE_PREDMETI,
+                               index=INSTRUKCIJE_PREDMETI.index(zadani_predmet) if zadani_predmet in INSTRUKCIJE_PREDMETI else 0)
+        stupanj = c5.selectbox("Stupanj školovanja", options=STUPNJEVI_SKOLOVANJA_INSTR, index=1)
+        c6, c7 = st.columns([3, 1])
+        oblik = c6.radio("Oblik", options=INSTRUKCIJE_OBLICI, horizontal=True)
+        broj = c7.number_input("U grupi", min_value=1, max_value=10, value=1,
+                               help="Broj učenika — samo kad je oblik Grupa.")
+        # 21.10.2026. (Cakijev zahtjev): oblik plaćanja je OBAVEZAN — bez njega se sat ne sprema.
+        placanje = st.radio("Plaćanje (obavezno)", PLACANJE_OPCIJE, horizontal=True,
+                            index=None, key="instr_placanje",
+                            help="💵 Gotovina = učenik/roditelj je platio tebi na satu. "
+                                 "❌ Nije plaćeno = sat ide na obračun (ponuda/račun).")
+        if not smije_gotovinu:
+            st.caption("ℹ️ Ovlaštenje za naplatu gotovinom dodjeljuje admin. Ako označiš 💵 Gotovina, "
+                       "sat ide adminu na potvrdu i do tada se vodi kao neplaćen.")
+        nap_jav = st.text_area("📒 Bilješka sa sata — što se radilo, domaća zadaća (vidi i roditelj)")
+        nap_int = st.text_area("Napomena interna (vidite samo vi i admin)")
+        teme_n, ocjena_n, zadaca_n = _polja_sata("novi", predmet, stupanj)
+        if st.form_submit_button("💾 Spremi termin", type="primary"):
+            danas = sada_zagreb().date()
+            if status not in ("Zakazan", "Otkazan na vrijeme") and datum > danas:
+                st.error("Budući termin može biti samo 📅 Zakazan.")
+            elif status == "Zakazan" and datum < danas:
+                st.error("Zakazan termin mora biti danas ili kasnije.")
+            elif datum < danas - timedelta(days=ROK_PROFESOR_DANA):
+                st.error(f"Termin se može upisati najviše {ROK_PROFESOR_DANA} dana unatrag — za stariji se javite adminu.")
+            elif placanje is None and status not in _sat.STATUSI_BEZ_SATA:
+                # 21.10.2026.: provjera plaćanja ide POSLIJE provjera datuma/statusa, da profesor
+                # prvo vidi konkretniju grešku (npr. "budući termin može biti samo Zakazan").
+                st.error("Označi oblik plaćanja (💵 Gotovina ili ❌ Nije plaćeno) — bez toga se sat "
+                         "ne može spremiti.")
             else:
-                status = "Održan"
-            # 21.10.2026.: kompaktnije — polja u stupcima, vrijeme iz izbornika (15 min, 8:00-21:30),
-            # a „Oblik” i „Broj učenika u grupi” u istom redu (Cakijeve oznake na snimci zaslona).
-            c1, c2, c3 = st.columns([2, 1, 1])
-            datum = c1.date_input("Datum", value=sada_zagreb().date(), format="DD.MM.YYYY")
-            vrijeme = c2.selectbox("Vrijeme", options=[""] + VREMENA_TERMINA,
-                                   format_func=lambda v: v or "—") if ima_status else ""
-            duljina = c3.selectbox("Trajanje (min)", options=INSTRUKCIJE_TRAJANJA, index=1)
-            c4, c5 = st.columns(2)
-            predmet = c4.selectbox("Predmet", options=INSTRUKCIJE_PREDMETI,
-                                   index=INSTRUKCIJE_PREDMETI.index(zadani_predmet) if zadani_predmet in INSTRUKCIJE_PREDMETI else 0)
-            stupanj = c5.selectbox("Stupanj školovanja", options=STUPNJEVI_SKOLOVANJA_INSTR, index=1)
-            c6, c7 = st.columns([3, 1])
-            oblik = c6.radio("Oblik", options=INSTRUKCIJE_OBLICI, horizontal=True)
-            broj = c7.number_input("U grupi", min_value=1, max_value=10, value=1,
-                                   help="Broj učenika — samo kad je oblik Grupa.")
-            # 21.10.2026. (Cakijev zahtjev): oblik plaćanja je OBAVEZAN — bez njega se sat ne sprema.
-            placanje = st.radio("Plaćanje (obavezno)", PLACANJE_OPCIJE, horizontal=True,
-                                index=None, key="instr_placanje",
-                                help="💵 Gotovina = učenik/roditelj je platio tebi na satu. "
-                                     "❌ Nije plaćeno = sat ide na obračun (ponuda/račun).")
-            if not smije_gotovinu:
-                st.caption("ℹ️ Ovlaštenje za naplatu gotovinom dodjeljuje admin. Ako označiš 💵 Gotovina, "
-                           "sat ide adminu na potvrdu i do tada se vodi kao neplaćen.")
-            nap_jav = st.text_area("📒 Bilješka sa sata — što se radilo, domaća zadaća (vidi i roditelj)")
-            nap_int = st.text_area("Napomena interna (vidite samo vi i admin)")
-            teme_n, ocjena_n, zadaca_n = _polja_sata("novi", predmet, stupanj)
-            if st.form_submit_button("💾 Spremi termin", type="primary"):
-                danas = sada_zagreb().date()
-                if status not in ("Zakazan", "Otkazan na vrijeme") and datum > danas:
-                    st.error("Budući termin može biti samo 📅 Zakazan.")
-                elif status == "Zakazan" and datum < danas:
-                    st.error("Zakazan termin mora biti danas ili kasnije.")
-                elif datum < danas - timedelta(days=ROK_PROFESOR_DANA):
-                    st.error(f"Termin se može upisati najviše {ROK_PROFESOR_DANA} dana unatrag — za stariji se javite adminu.")
-                elif placanje is None and status not in _sat.STATUSI_BEZ_SATA:
-                    # 21.10.2026.: provjera plaćanja ide POSLIJE provjera datuma/statusa, da profesor
-                    # prvo vidi konkretniju grešku (npr. "budući termin može biti samo Zakazan").
-                    st.error("Označi oblik plaćanja (💵 Gotovina ili ❌ Nije plaćeno) — bez toga se sat "
-                             "ne može spremiti.")
-                else:
-                    novi_id = dodaj_instrukciju_termin(
-                        sheet, ucenik_id=uid, ime_djeteta=ime, nastavnik=nastavnik, datum=str(datum),
-                        duljina_min=duljina, oblik=oblik, broj_ucenika_u_grupi=broj if oblik == "Grupa" else None,
-                        placeno_oznaka_prof=_oznaka_placanja(placanje, smije_gotovinu),
-                        napomena_interna=_napomena_s_gotovinom(nap_int, placanje, smije_gotovinu),
-                        napomena_javna=nap_jav, predmet=predmet, stupanj_skolovanja=stupanj,
-                        status_termina=status, vrijeme=vrijeme)
-                    if status not in _sat.STATUSI_BEZ_SATA and (teme_n or ocjena_n or zadaca_n):
+                novi_id = dodaj_instrukciju_termin(
+                    sheet, ucenik_id=uid, ime_djeteta=ime, nastavnik=nastavnik, datum=str(datum),
+                    duljina_min=duljina, oblik=oblik, broj_ucenika_u_grupi=broj if oblik == "Grupa" else None,
+                    placeno_oznaka_prof=_oznaka_placanja(placanje, smije_gotovinu),
+                    napomena_interna=_napomena_s_gotovinom(nap_int, placanje, smije_gotovinu),
+                    napomena_javna=nap_jav, predmet=predmet, stupanj_skolovanja=stupanj,
+                    status_termina=status, vrijeme=vrijeme)
+                if status not in _sat.STATUSI_BEZ_SATA and (teme_n or ocjena_n or zadaca_n):
+                    try:
+                        _sat.spremi_sat(sheet, novi_id, teme_n, ocjena_n, zadaca_n, nastavnik=nastavnik)
+                    except ValueError as e:
+                        _poruka("warning", f"Termin je spremljen, ali teme/zadaća nisu: {e}")
+                _poruka("success", f"Termin spremljen: {ime}, {datum.strftime('%d.%m.%Y.')} ({status}).")
+                st.session_state["pp_forma_n"] = st.session_state.get("pp_forma_n", 0) + 1
+                st.session_state.pop("instr_placanje", None)
+                st.cache_data.clear()
+                st.rerun()
+
+
+
+def _ugovoreni_termini(sheet, nastavnik, smije_gotovinu, moji_t):
+    """📅 Ugovoreni (zakazani) termini — „Što je bilo?” jednim klikom."""
+    zakazani = moji_t[moji_t["status_termina"] == "Zakazan"].sort_values("datum")
+    if not zakazani.empty:
+        st.markdown(f"#### 📅 Ugovoreni termini ({len(zakazani)})")
+        danas = sada_zagreb().date()
+        for _, t in zakazani.iterrows():
+            with st.container(border=True):
+                st.markdown(f"**{_dan_datum(t['datum'])} {t.get('vrijeme', '')}** · {t['ime_djeteta']} · "
+                            f"{t.get('predmet', '')} · {t['duljina_min']} min")
+                proslo = str(t["datum"])[:10] <= str(danas)
+                opcije_st = ["Održan", "Otkazan na vrijeme", "Otkazan kasno", "Nije došao"] if proslo \
+                    else ["Otkazan na vrijeme"]
+                k1 = k2 = st.container()   # 3.11.: jedno ispod drugog — stane i u uski stupac
+                novi = k1.selectbox("Što je bilo?", opcije_st, format_func=OZNAKE_STATUSA_TERMINA.get,
+                                    key=f"zak_st_{t['termin_id']}")
+                bilj = k2.text_input("📒 Bilješka sa sata (vidi roditelj)", key=f"zak_b_{t['termin_id']}") \
+                    if novi == "Održan" else None
+                # 21.10.2026.: i kod zakazanog termina plaćanje je obavezno kad sat postaje održan.
+                pl = st.radio("Plaćanje (obavezno)", PLACANJE_OPCIJE, horizontal=True, index=None,
+                              key=f"zak_pl_{t['termin_id']}") if novi == "Održan" else None
+                if st.button("💾 Spremi", key=f"zak_s_{t['termin_id']}"):
+                    if novi == "Održan" and pl is None:
+                        _poruka("error", "Označi oblik plaćanja (💵 Gotovina ili ❌ Nije plaćeno).")
+                    else:
                         try:
-                            _sat.spremi_sat(sheet, novi_id, teme_n, ocjena_n, zadaca_n, nastavnik=nastavnik)
+                            promijeni_status_termina(
+                                sheet, t["termin_id"], novi, biljeska=bilj, nastavnik=nastavnik,
+                                placanje=_oznaka_placanja(pl, smije_gotovinu) if pl else None)
+                            if pl == PLACANJE_GOTOVINA and not smije_gotovinu:
+                                _sat_napomena_gotovina(sheet, t["termin_id"], nastavnik)
+                            _poruka("success", f"{t['ime_djeteta']}: {OZNAKE_STATUSA_TERMINA[novi]}.")
                         except ValueError as e:
-                            _poruka("warning", f"Termin je spremljen, ali teme/zadaća nisu: {e}")
-                    _poruka("success", f"Termin spremljen: {ime}, {datum.strftime('%d.%m.%Y.')} ({status}).")
+                            _poruka("error", str(e))
                     st.cache_data.clear()
                     st.rerun()
 
+
+
+def _pregled_termina(sheet, nastavnik, smije_gotovinu, df_instr, ima_status, uid=None, dio="sve"):
+    """Ugovoreni termini (Što je bilo?), tablica, bilješke, ispravak, gotovina — za sve ili za jednog učenika."""
     if df_instr.empty or "nastavnik" not in df_instr.columns:
         st.info("Još nema evidentiranih termina.")
         return
     moji_t = df_instr[df_instr["nastavnik"] == nastavnik].sort_values("datum", ascending=False)
+    if uid is not None:
+        moji_t = moji_t[moji_t["ucenik_id"].astype(str) == str(uid)]
     if moji_t.empty:
-        st.info("Nemate još evidentiranih termina.")
+        st.info("Nemate još evidentiranih termina." if uid is None else "Još nema termina s ovim učenikom.")
         return
 
-    if ima_status:
-        zakazani = moji_t[moji_t["status_termina"] == "Zakazan"].sort_values("datum")
-        if not zakazani.empty:
-            st.markdown(f"#### 📅 Zakazani termini ({len(zakazani)})")
-            danas = sada_zagreb().date()
-            for _, t in zakazani.iterrows():
-                with st.container(border=True):
-                    st.markdown(f"**{str(t['datum'])[:10]} {t.get('vrijeme', '')}** · {t['ime_djeteta']} · "
-                                f"{t.get('predmet', '')} · {t['duljina_min']} min")
-                    proslo = str(t["datum"])[:10] <= str(danas)
-                    opcije_st = ["Održan", "Otkazan na vrijeme", "Otkazan kasno", "Nije došao"] if proslo \
-                        else ["Otkazan na vrijeme"]
-                    k1, k2 = st.columns([2, 3])
-                    novi = k1.selectbox("Što je bilo?", opcije_st, format_func=OZNAKE_STATUSA_TERMINA.get,
-                                        key=f"zak_st_{t['termin_id']}")
-                    bilj = k2.text_input("📒 Bilješka sa sata (vidi roditelj)", key=f"zak_b_{t['termin_id']}") \
-                        if novi == "Održan" else None
-                    # 21.10.2026.: i kod zakazanog termina plaćanje je obavezno kad sat postaje održan.
-                    pl = st.radio("Plaćanje (obavezno)", PLACANJE_OPCIJE, horizontal=True, index=None,
-                                  key=f"zak_pl_{t['termin_id']}") if novi == "Održan" else None
-                    if st.button("💾 Spremi", key=f"zak_s_{t['termin_id']}"):
-                        if novi == "Održan" and pl is None:
-                            _poruka("error", "Označi oblik plaćanja (💵 Gotovina ili ❌ Nije plaćeno).")
-                        else:
-                            try:
-                                promijeni_status_termina(
-                                    sheet, t["termin_id"], novi, biljeska=bilj, nastavnik=nastavnik,
-                                    placanje=_oznaka_placanja(pl, smije_gotovinu) if pl else None)
-                                if pl == PLACANJE_GOTOVINA and not smije_gotovinu:
-                                    _sat_napomena_gotovina(sheet, t["termin_id"], nastavnik)
-                                _poruka("success", f"{t['ime_djeteta']}: {OZNAKE_STATUSA_TERMINA[novi]}.")
-                            except ValueError as e:
-                                _poruka("error", str(e))
-                        st.cache_data.clear()
-                        st.rerun()
+    if dio != "ostalo" and ima_status:
+        _ugovoreni_termini(sheet, nastavnik, smije_gotovinu, moji_t)
+    if dio == "ugovoreno":
+        return
 
-    st.markdown("#### Moji termini")
+    st.markdown("#### Održani i svi upisani termini" if uid is None else "#### Termini s ovim učenikom")
     placeno = (moji_t.get("placeno_oznaka_prof", "") == PLACENO_GOTOVINOM) | (moji_t.get("uplata_potvrdjena_admin", "") == "Da")
     tablica = pd.DataFrame({
         "Datum": [str(v)[:10] for v in moji_t["datum"]],
@@ -1013,6 +1182,19 @@ def _kartica_instrukcije(sheet, nastavnik, smije_gotovinu):
                             _poruka("error", str(e))
                         st.cache_data.clear()
                         st.rerun()
+
+
+
+
+def _kartica_instrukcije(sheet, nastavnik, smije_gotovinu):
+    """📋 Moji termini — pregled svih mojih termina. Novi termin se upisuje na kartici učenika."""
+    _uputa.prikazi(st, "instrukcije")
+    df_instr = _ucitaj("Instrukcije_termini")
+    ima_status = "status_termina" in df_instr.columns
+    with st.container(horizontal=True, vertical_alignment="center"):
+        st.caption("Novi termin upisuješ na kartici učenika (👩‍🎓 Učenici → odaberi učenika → ➕ Upiši termin).")
+        st.button("➕ Novi termin", key="pp_novi_termin", on_click=tema.idi_na, args=("pp", "👩‍🎓 Učenici"))
+    _pregled_termina(sheet, nastavnik, smije_gotovinu, df_instr, ima_status)
 
 
 # ------------------------------------------------------------------ 📄 mjesečni izvještaj
@@ -1250,7 +1432,7 @@ def _kartica_danas(nastavnik):
     if cekaju_o:
         imena_o = ", ".join(x["ime_djeteta"] for x in cekaju_o[:4]) + (" …" if len(cekaju_o) > 4 else "")
         st.info(f"✍️ **Osvrt roditelju čeka {len(cekaju_o)} učenika** — {imena_o}. "
-                "Otvori **👩‍🎓 Moji učenici → ✍️ Napiši roditelju** (jednom u 4 tjedna po učeniku).")
+                "Otvori **👩‍🎓 Učenici → učenik → ✍️ Napiši roditelju** (jednom u 4 tjedna po učeniku).")
 
     lijevo, desno = st.columns(2, gap="large")
     with lijevo:
@@ -1276,13 +1458,13 @@ def _kartica_danas(nastavnik):
             tablica = pd.DataFrame({
                 "Sat": [f"{k['datum']:%d.%m.} {DANI_U_TJEDNU[k['datum'].weekday()][:3]} {k['vrijeme']}" for k in kasne],
                 "Grupa": [f"{k['naziv']} (uč. {k['ucionica']})" for k in kasne],
-                "Kartica": ["🎓 Matura" if k["izvor"] == "Matura" else "✅ Dolasci — grupe" for k in kasne],
+                "Kartica": ["🎓 Matura" if k["izvor"] == "Matura" else "👥 Grupe" for k in kasne],
                 "Zadnji dan za upis": [f"{k['zadnji_dan']:%d.%m.}" + (" 🚨" if k["preostalo_dana"] <= 3 else "")
                                        for k in kasne],
             })
             st.dataframe(tablica, hide_index=True, width="stretch")
         if instr["cekaju_status"]:
-            st.markdown("**Instrukcije bez konačnog statusa** (označite Održan / Otkazan u kartici 📝 Instrukcije):")
+            st.markdown("**Instrukcije bez konačnog statusa** (označite Održan / Otkazan na kartici učenika ili u 📋 Moji termini):")
             st.dataframe(pd.DataFrame({
                 "Datum": [f"{r['d']:%d.%m.}" for r in instr["cekaju_status"]],
                 "Učenik": [r["ucenik"] for r in instr["cekaju_status"]],
@@ -1616,41 +1798,46 @@ def _kartica_zadaci(sheet, nastavnik):
 
 
 def _siri_stranicu():
-    """Širi sadržaj (layout="wide" + manji bočni razmaci) da tablice i popisi stanu pregledno."""
-    st.markdown("<style>.block-container{max-width:100%!important;padding-left:2rem!important;"
-                "padding-right:2rem!important;padding-top:2rem!important}</style>", unsafe_allow_html=True)
+    """3.11.2026.: širinu i izgled sada daje caki_tema (kao CRM admin) — ovo ostaje radi kompatibilnosti."""
+    return None
+
+
+def _zaglavlje_portala(nastavnik):
+    """Pozdrav + brzi brojevi + Osvježi/Odjava (kao zaglavlje kartice učenika u CRM-u)."""
+    with tema.kutija("pp_zaglavlje"):
+        a, b = st.columns([4, 1.4], vertical_alignment="center")
+        with a:
+            danas = sada_zagreb().date()
+            tema.html_(f'<div class="kc-pozdrav">CAKI portal za profesore · {_dan_datum(str(danas))}{danas.year}.</div>'
+                       f'<div class="kc-h1">🎓 {html_escape(nastavnik)}</div>')
+        with b:
+            with st.container(horizontal=True, horizontal_alignment="right"):
+                # 21.10.2026. (Cakijev zahtjev): podaci se čitaju iz Sheeta kroz cache — ovaj gumb ga isprazni.
+                if st.button("🔄 Osvježi", help="Ponovno pročitaj podatke iz Sheeta (npr. admin ti je upravo "
+                                                "dodijelio učenika ili promijenio raspored)."):
+                    st.cache_data.clear()
+                    st.rerun()
+                if st.button("🚪 Odjava"):
+                    st.session_state.pop("instruktor_prijavljen", None)
+                    st.session_state.pop("pp_aktivna", None)
+                    st.session_state.pop("instr_ucenik", None)
+                    st.rerun()
 
 
 def prikazi_portal_profesora():
-    stil.primijeni()   # 31.10.2026.: CAKI tema — mora biti prije ijednog elementa
-    _siri_stranicu()
+    tema.primijeni()   # 3.11.2026.: tema kao CRM admin — mora biti prije ijednog elementa
     sheet = _init_sheet()
     nastavnik = _prijava()
-    c1, c2, c3 = st.columns([5, 1, 1])
-    c1.title(f"🎓 {nastavnik}")
-    # 21.10.2026. (Cakijev zahtjev): podaci se čitaju iz Sheeta kroz cache, pa promjena koju admin
-    # napravi dok je portal otvoren nije odmah vidljiva. Ovaj gumb isprazni cache i pročita Sheet.
-    if c2.button("🔄 Osvježi", help="Ponovno pročitaj podatke iz Sheeta (npr. admin ti je upravo "
-                                    "dodijelio učenika ili promijenio raspored)."):
-        st.cache_data.clear()
-        st.rerun()
-    if c3.button("🚪 Odjava"):
-        st.session_state.pop("instruktor_prijavljen", None)
-        st.rerun()
+    _zaglavlje_portala(nastavnik)
     if "_prof_poruka" in st.session_state:
         vrsta, tekst = st.session_state.pop("_prof_poruka")
         getattr(st, vrsta)(tekst)
     # 18.10.2026.: suradnik na modelu najma (npr. Slađana) vidi SAMO svoje termine i zauzetost —
     # nema pristup učenicima, dodjelama, instrukcijama ni financijama (Cakijeva odluka).
     if je_najmoprimac(_ucitaj(PROFILI_PROFESORA_TAB), nastavnik):
-        k_naj, k_zau_n, k_kal_n = st.tabs(["🔑 Moji termini", "🏫 Zauzetost učionica",
-                                           "📅 Kalendar centra"])
-        with k_naj:
-            _kartica_najam(sheet, nastavnik)
-        with k_zau_n:
-            _kartica_zauzetost()
-        with k_kal_n:
-            _kartica_kalendar()
+        k = tema.nav(["🔑 Moji termini", "🏫 Zauzetost učionica", "📅 Kalendar centra"], "pp")
+        {"🔑 Moji termini": lambda: _kartica_najam(sheet, nastavnik), "🏫 Zauzetost učionica": _kartica_zauzetost,
+         "📅 Kalendar centra": _kartica_kalendar}[k]()
         return
 
     df_n_prog = _ucitaj("Nastavnici")
@@ -1659,30 +1846,26 @@ def prikazi_portal_profesora():
     # 21.10.2026. (Cakijev zahtjev): profesor može predavati više programa (Matura + Instrukcije + Upisi).
     # Vidi samo kartice svojih programa; prazan stupac Nastavnici.programi = vidi sve, kao dosad.
     radi = {p_: nastavnik_radi_program(df_n_prog, nastavnik, p_) for p_ in PROGRAMI_NASTAVNIKA}
-    naziv_upiti = f"📥 Novi upiti ({n_upita})" if n_upita else "📥 Novi upiti"
-    redom = [("🏠 Danas", _kartica_danas, True)]
     n_zad = _broj_mojih_zadataka(nastavnik)   # 2.11.2026.: zadaci od admina
-    redom += [(f"✅ Zadaci ({n_zad})" if n_zad else "✅ Zadaci", _kartica_zadaci, True)]
+    # 3.11.2026. (Claude, redizajn): traka kartica od gumba — iscrtava se SAMO odabrana kartica
+    # (prije st.tabs: svih 12 kartica se računalo na svaki klik → sporo i puno čitanja Sheeta).
+    # Redoslijed po učestalosti: Danas → Učenici (upis termina) → Moji termini → grupe → ostalo.
+    redom = [("🏠 Danas", lambda: _kartica_danas(nastavnik))]
     if radi["Instrukcije"]:
-        redom += [(naziv_upiti, _kartica_upiti, True), ("🗓️ Dostupnost", _kartica_dostupnost, True)]
-    if radi["Upisi"]:
-        redom += [("✅ Dolasci — grupe", _kartica_dolasci, True), ("🧩 Moji blokovi", _kartica_blokovi, True)]
+        redom += [("👩‍🎓 Učenici", lambda: _kartica_ucenici(sheet, nastavnik, smije_gotovinu)),
+                  ("📋 Moji termini", lambda: _kartica_instrukcije(sheet, nastavnik, smije_gotovinu))]
     if radi["Matura"]:
-        redom += [("🎓 Matura", _kartica_matura, True)]
+        redom += [("🎓 Matura", lambda: _kartica_matura(sheet, nastavnik))]
+    if radi["Upisi"]:
+        redom += [("👥 Grupe", lambda: _kartica_dolasci(sheet, nastavnik)),
+                  ("🧩 Blokovi", lambda: _kartica_blokovi(sheet, nastavnik))]
+    redom += [(f"✅ Zadaci ({n_zad})" if n_zad else "✅ Zadaci", lambda: _kartica_zadaci(sheet, nastavnik))]
     if radi["Instrukcije"]:
-        redom += [("📝 Instrukcije", _kartica_instrukcije, True),
-                  ("👩‍🎓 Moji učenici", _kartica_moji_ucenici, True)]
-    redom += [("📄 Mjesečni izvještaj", _kartica_izvjestaj, True),
-              ("🏫 Zauzetost učionica", _kartica_zauzetost, True),
-              ("📅 Kalendar centra", _kartica_kalendar, True)]
-    kartice_p = dict(zip([n_ for n_, _f, _a in redom], st.tabs([n_ for n_, _f, _a in redom])))
-    for naziv_k, funkcija_k, _aktivna in redom:
-        with kartice_p[naziv_k]:
-            if funkcija_k is _kartica_instrukcije:
-                funkcija_k(sheet, nastavnik, smije_gotovinu)
-            elif funkcija_k in (_kartica_danas, _kartica_moji_ucenici):
-                funkcija_k(nastavnik)
-            elif funkcija_k in (_kartica_zauzetost, _kartica_kalendar):
-                funkcija_k()
-            else:
-                funkcija_k(sheet, nastavnik)
+        redom += [(f"📥 Novi upiti ({n_upita})" if n_upita else "📥 Novi upiti", lambda: _kartica_upiti(sheet, nastavnik)),
+                  ("🗓️ Dostupnost", lambda: _kartica_dostupnost(sheet, nastavnik))]
+    redom += [("📄 Izvještaj", lambda: _kartica_izvjestaj(sheet, nastavnik)),
+              ("🏫 Učionice", _kartica_zauzetost),
+              ("📅 Kalendar", _kartica_kalendar)]
+    aktivna = tema.nav([n_ for n_, _f in redom], "pp")
+    import re as _re
+    dict((_re.sub(r"\s*\(\d+\)$", "", n_), f_) for n_, f_ in redom)[aktivna]()

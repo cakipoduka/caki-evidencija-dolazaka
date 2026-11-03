@@ -6,11 +6,15 @@
 # Povratak na staro: Discard u GitHub Desktopu ili git checkout te datoteke.
 
 [theme]
-primaryColor = "#227AFF"
-backgroundColor = "#F5F7FB"
-secondaryBackgroundColor = "#FFFFFF"
-textColor = "#273044"
+# 3.11.2026. (Claude, redizajn): iste boje kao CRM admin (caki-upisi-crm-main) — font IBM Plex Sans dolazi iz caki_tema.py
+primaryColor = "#1d64b8"
+backgroundColor = "#f4f5f7"
+secondaryBackgroundColor = "#ffffff"
+textColor = "#1b2230"
 font = "sans serif"
+borderColor = "#d3d8df"
+showWidgetBorder = true
+baseRadius = "8px"
 
 [client]
 # Profesorski portal je JEDNA stranica s karticama (2_Instrukcije se otvara
