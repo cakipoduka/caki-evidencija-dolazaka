@@ -320,7 +320,8 @@ def _kartica_dolasci(sheet, nastavnik):
     for _, r in roster.iterrows():
         c1, c2 = st.columns([2, 3])
         c1.write(r["ime_djeteta"])
-        statusi[r["ucenik_id"]] = c2.radio("status", ["1", "0", "2"], format_func=oznake.get, horizontal=True,
+        # 7.11.2026.: zadano je ODSUTAN (index=1) — prisutnost se označava prozivkom
+        statusi[r["ucenik_id"]] = c2.radio("status", ["1", "0", "2"], index=1, format_func=oznake.get, horizontal=True,
                                            key=f"dol_{grupa_id}_{r['ucenik_id']}_{odabrani_datum}",
                                            label_visibility="collapsed")
 
@@ -407,7 +408,7 @@ def _kartica_matura(sheet, nastavnik):
     oznake = {"1": "✅ Prisutan", "0": "❌ Odsutan", "2": "💻 Online"}
     statusi = {}
     for u in kanta["ucenici"]:
-        zadano = prije.get(u["ucenik_id"], "2" if u["online"] else "1")
+        zadano = prije.get(u["ucenik_id"], "0")   # 7.11.2026.: zadano odsutan, prozivkom se mijenja
         c1, c2 = st.columns([2, 3])
         c1.write(f"{u['ime_djeteta']} · {u['predmet']}" + (" 💻" if u["online"] else ""))
         statusi[u["ucenik_id"]] = c2.radio("status", ["1", "0", "2"], index=["1", "0", "2"].index(zadano)
