@@ -23,6 +23,7 @@ from pipeline_upisi import (
     DANI_U_TJEDNU,
     labela_kante,
     labela_matura_grupe,
+    otkazi_termin,
     razdoblje_kante_mature,
     sada_zagreb,
     spremi_cijeli_termin,
@@ -33,6 +34,7 @@ BEZ_ZAPISA_DANA = 14
 KOLIKO_TERMINA = 8
 OZNAKE = {"u": "\u2705", "o": "\U0001F4BB", "x": "\u274C"}
 IZ_OZNAKE = {v: k for k, v in OZNAKE.items()}
+IZ_OZNAKE["—"] = ""            # prazna ćelija
 OPCIJE_CELIJE = ["", "\u2705", "\U0001F4BB", "\u274C"]
 OPCIJE_GOSTA = ["", "\u2705", "\U0001F4BB"]
 STATUS_IZ_BROJA = {"1": "u", "2": "o", "0": "x"}
@@ -72,7 +74,8 @@ def kratka_grupa(grupa_id: str) -> str:
     return labela_matura_grupe(grupa_id).replace("Matura · ", "")
 
 def datumi_bloka(kanta: dict, razdoblja=None, praznici=None, danas=None,
-                 koliko: int = KOLIKO_TERMINA, zapisani=None, pomak: int = 0) -> list:
+                 koliko: int = KOLIKO_TERMINA, zapisani=None, pomak: int = 0,
+                 otkazani=None) -> list:
     """Prozor od `koliko` datuma te grupe: planirani (iz Razdoblja_termina, praznici preskočeni) +
     svi datumi koji imaju zapis. `pomak` = koliko prozora unatrag (0 = zadnjih 8).
 
@@ -86,7 +89,8 @@ def datumi_bloka(kanta: dict, razdoblja=None, praznici=None, danas=None,
         d = od + timedelta(days=(DANI_U_TJEDNU.index(kanta["dan"]) - od.weekday()) % 7)
         kraj = min(do or danas, danas)
         while d <= kraj and len(datumi) < 400:
-            if d not in praznici:
+            if d not in praznici and (kanta["grupa_id"], d) not in (otkazani or {}) \
+                    and (kanta["grupa_id"], d.isoformat()) not in (otkazani or {}):
                 datumi.append(d)
             d += timedelta(days=7)
     for z in zapisani or []:
@@ -164,7 +168,7 @@ def tablica_bloka(redci: list, datumi: list, prikazi_sifru: bool = True, portal_
             red["Šifra"] = (f"{str(portal_url).rstrip('/')}/?ucenik_id={quote(str(r['ucenik_id']))}"
                             if portal_url else str(r["ucenik_id"]))
         for d in datumi:
-            red[kratki(d)] = OZNAKE.get(r["statusi"].get(d, ""), "")
+            red[kratki(d)] = OZNAKE.get(r["statusi"].get(d, ""), "—")
         red["Ukupno"] = r["ukupno"]
         red["%"] = r["postotak"]
         if gostovanja is not None:
@@ -180,7 +184,7 @@ def tablica_gostiju(gosti: list, datumi: list) -> pd.DataFrame:
     for r in gosti:
         red = {"Učenik": r["ime"], "Gost iz": r.get("maticna", "") or "druga grupa"}
         for d in datumi:
-            red[kratki(d)] = OZNAKE.get(r["statusi"].get(d, ""), "")
+            red[kratki(d)] = OZNAKE.get(r["statusi"].get(d, ""), "—")
         podaci[r["ucenik_id"]] = red
     stupci = ["Učenik", "Gost iz"] + [kratki(d) for d in datumi]
     return pd.DataFrame(list(podaci.values()), index=list(podaci), columns=stupci)
@@ -306,10 +310,11 @@ def _upisi(st, sheet, kanta, datum, df_termini, nastavnik, roster=None, gosti=No
 
 
 def prikazi_grupu(st, sheet, kanta, d_matura, danas, razdoblja=None, praznici=None,
-                  df_termini=None, ucenici=None, nastavnik="", rok_dana=14, key_prefix="mat"):
+                  df_termini=None, ucenici=None, nastavnik="", rok_dana=14, key_prefix="mat",
+                  otkazani=None):
     """Tablica jedne grupe: učenici × datumi, padajući izbor, gost, spremanje jednim gumbom."""
     gid = kanta["grupa_id"]
-    datumi = datumi_bloka(kanta, razdoblja, praznici, danas)
+    datumi = datumi_bloka(kanta, razdoblja, praznici, danas, otkazani=otkazani)
     if not datumi:
         st.info("Za ovu grupu još nema termina.")
         return
@@ -325,7 +330,7 @@ def prikazi_grupu(st, sheet, kanta, d_matura, danas, razdoblja=None, praznici=No
 
     zadnji_u_roku = max((dt for dt in datumi if dt >= rok_od), default=None)
     lab_d = {kratki(x): x for x in datumi}
-    b1, b2, b3 = st.columns([2, 2, 4])
+    b1, b2, b3, b4 = st.columns([2, 2, 3, 2])
     odabrani = b1.selectbox("Termin", list(lab_d), index=len(lab_d) - 1,
                             key=f"{key_prefix}_bulk_{gid}", label_visibility="collapsed",
                             help="Termin na koji se odnose gumbi desno")
@@ -338,6 +343,24 @@ def prikazi_grupu(st, sheet, kanta, d_matura, danas, razdoblja=None, praznici=No
                        for u in kanta["ucenici"]])
     with b3.popover("➕ Gost (učenik iz druge grupe)"):
         _gost(st, sheet, kanta, datum_bulk, df_termini, ucenici, nastavnik, key_prefix)
+    with b4.popover("🚫 Ne održava se"):
+        st.caption(f"Grupa: {labela_kante(kanta)}")
+        predlozeni = _naredni_datum(kanta, danas)
+        datum_otk = st.date_input("Datum koji se NE održava", value=predlozeni,
+                                  min_value=danas - timedelta(days=60),
+                                  max_value=danas + timedelta(days=180),
+                                  format="DD.MM.YYYY", key=f"{key_prefix}_otk_d_{gid}")
+        razlog = st.text_input("Razlog (npr. praznik)", key=f"{key_prefix}_otk_r_{gid}")
+        if st.button("🚫 Otkaži termin", key=f"{key_prefix}_otk_b_{gid}"):
+            try:
+                otkazi_termin(sheet, gid, datum_otk, razlog.strip() or "ne održava se", False, nastavnik)
+            except Exception as e:                                # noqa: BLE001
+                st.error(f"❌ Nije otkazano: {e}")
+            else:
+                st.cache_data.clear()
+                st.rerun()
+        st.caption("Otkazani datum više ne ulazi u tablicu ni u obračun.")
+
 
     izvorno = tablica_bloka(redci, datumi, prikazi_sifru=False)
     konfig = {"Učenik": st.column_config.TextColumn(width="medium", disabled=True)}
@@ -378,6 +401,14 @@ def prikazi_grupu(st, sheet, kanta, d_matura, danas, razdoblja=None, praznici=No
             st.success(f"✅ Spremljeno: {rez['spremljeno']} zapisa.")
             st.cache_data.clear()
             st.rerun()
+
+
+def _naredni_datum(kanta, danas):
+    """Predloženi datum za otkazivanje: prvi sljedeći termin te grupe (ili danas)."""
+    if kanta.get("dan") not in DANI_U_TJEDNU:
+        return danas
+    d = zadnji_datum_dana(kanta["dan"], danas)
+    return d if d >= danas else d + timedelta(days=7)
 
 
 def _gost(st, sheet, kanta, datum, df_termini, ucenici, nastavnik, key_prefix):

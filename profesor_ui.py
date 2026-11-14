@@ -385,13 +385,15 @@ def _kartica_matura(sheet, nastavnik):
     # gost i „Svi prisutni”. Logika je u dolasci_tablica.py (kopija čistih funkcija iz CRM-a).
     import dolasci_tablica as _tab
     from pipeline_upisi import dolasci_matura
-    if nacin == "zamjena" and kanta.get("profesor") and kanta["profesor"] != nastavnik:
-        st.warning(f"🔄 Zamjena — u rasporedu je {kanta['profesor']}. Bilježi se automatski.")
     termini, dolasci = _ucitaj("Termini"), _ucitaj("Dolasci")
     razdoblja, praznici = _razdoblja_i_praznici()
+    if nacin == "zamjena" and kanta.get("profesor") and kanta["profesor"] != nastavnik:
+        st.warning(f"🔄 Zamjena — u rasporedu je {kanta['profesor']}. Bilježi se automatski.")
+    from pipeline_upisi import load_otkazane, otkazani_po_kljucu
+    otkazani = otkazani_po_kljucu(load_otkazane(sheet))
     _tab.prikazi_grupu(st, sheet, kanta, dolasci_matura(termini, dolasci), sada_zagreb().date(),
                        razdoblja, praznici, termini, _ucitaj("Učenici"), nastavnik=nastavnik,
-                       rok_dana=ROK_PROFESOR_DANA, key_prefix="mat")
+                       rok_dana=ROK_PROFESOR_DANA, key_prefix="mat", otkazani=otkazani)
 
 
 # ------------------------------------------------------------------ 📝 instrukcije
