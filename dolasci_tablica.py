@@ -321,9 +321,15 @@ def prikazi_grupu(st, sheet, kanta, d_matura, danas, razdoblja=None, praznici=No
                   otkazani=None):
     """Tablica jedne grupe: učenici × datumi, padajući izbor, gost, spremanje jednim gumbom."""
     gid = kanta["grupa_id"]
+    rok_od = danas - timedelta(days=int(rok_dana or 0))
     datumi = datumi_bloka(kanta, razdoblja, praznici, danas, otkazani=otkazani)
+    # 19.11.2026.: uz planirane datume i oni ručno dodani kroz kalendar (v. dodatni_datumi).
+    datumi = sorted(set(datumi) | {x for x in dodatni_datumi(st, gid, key_prefix)
+                                   if rok_od <= x <= danas})
     if not datumi:
-        st.info("Za ovu grupu još nema termina.")
+        st.info("Za ovu grupu još nema termina u rasporedu.")
+        with st.popover("📅 Drugi datum"):
+            biranje_datuma(st, kanta, danas, rok_od, datumi, key_prefix)
         return
     redci, gosti = redci_bloka(kanta, datumi, d_matura)
     if not redci:
@@ -331,13 +337,12 @@ def prikazi_grupu(st, sheet, kanta, d_matura, danas, razdoblja=None, praznici=No
         return
     if st.session_state.get("mat_poruka"):
         st.success(st.session_state.pop("mat_poruka"))
-    rok_od = danas - timedelta(days=int(rok_dana or 0))
     st.caption(f"{labela_kante(kanta)}  ·  {len(kanta['ucenici'])} učenika  ·  možeš ispravljati satove "
                f"od {rok_od.strftime('%d.%m.%Y.')} (starije upisuje admin).")
 
     zadnji_u_roku = max((dt for dt in datumi if dt >= rok_od), default=None)
     lab_d = {kratki(x): x for x in datumi}
-    b1, b2, b3, b4 = st.columns([2, 2, 3, 2])
+    b1, b2, b3, b4, b5 = st.columns([2, 2, 3, 2, 2])
     odabrani = b1.selectbox("Termin", list(lab_d), index=len(lab_d) - 1,
                             key=f"{key_prefix}_bulk_{gid}", label_visibility="collapsed",
                             help="Termin na koji se odnose gumbi desno")
@@ -350,6 +355,8 @@ def prikazi_grupu(st, sheet, kanta, d_matura, danas, razdoblja=None, praznici=No
                        for u in kanta["ucenici"]])
     with b3.popover("➕ Gost (učenik iz druge grupe)"):
         _gost(st, sheet, kanta, datum_bulk, df_termini, ucenici, nastavnik, key_prefix)
+    with b5.popover("📅 Drugi datum"):
+        biranje_datuma(st, kanta, danas, rok_od, datumi, key_prefix)
     with b4.popover("🚫 Ne održava se"):
         st.caption(f"Grupa: {labela_kante(kanta)}")
         predlozeni = _naredni_datum(kanta, danas)
@@ -407,6 +414,48 @@ def prikazi_grupu(st, sheet, kanta, d_matura, danas, razdoblja=None, praznici=No
         elif rez["obrisano"] or rez["spremljeno"]:
             st.success(f"✅ Spremljeno: {rez['spremljeno']} zapisa.")
             st.cache_data.clear()
+            st.rerun()
+
+
+def dodatni_datumi(st, gid: str, key_prefix: str) -> list:
+    """Datumi koje je korisnik ručno dodao kroz kalendar (žive u session_state, po grupi).
+
+    19.11.2026.: termini nisu fiksni — sat se zna održati na praznik, pomaknuti se dogovorom s
+    grupom ili se nadoknaditi drugi dan. Automatski plan iz Razdoblja_termina takve datume ne
+    poznaje (praznike čak izričito preskače), pa se bez ovoga takav sat ne može upisati.
+    Ručni datum NE mijenja plan ni tab Razdoblja_termina — samo doda stupac u tablicu.
+    """
+    out = []
+    for x in st.session_state.get(f"{key_prefix}_extra_{gid}", []):
+        d = u_datum(x)
+        if d:
+            out.append(d)
+    return sorted(set(out))
+
+
+def biranje_datuma(st, kanta, danas, najranije, datumi, key_prefix):
+    """📅 Kalendar: dodaj datum sata koji nije u planiranom rasporedu."""
+    gid = kanta["grupa_id"]
+    kljuc = f"{key_prefix}_extra_{gid}"
+    st.caption("Sat koji nije u rasporedu — npr. praznik na koji se ipak radilo, "
+               "dogovoreni pomak ili nadoknada.")
+    d = st.date_input("Datum sata", value=danas, min_value=najranije, max_value=danas,
+                      format="DD.MM.YYYY", key=f"{key_prefix}_dod_d_{gid}")
+    dan_kante = str(kanta.get("dan", "") or "")
+    if dan_kante in DANI_U_TJEDNU and DANI_U_TJEDNU[d.weekday()] != dan_kante:
+        st.warning(f"⚠️ {d.strftime('%d.%m.%Y.')} je {DANI_U_TJEDNU[d.weekday()].lower()}, "
+                   f"a grupa inače ima sat {dan_kante.lower()}om. Provjeri je li datum točan.")
+    if d in (datumi or []):
+        st.caption("Taj je datum već u tablici.")
+    elif st.button("➕ Dodaj u tablicu", key=f"{key_prefix}_dod_b_{gid}"):
+        st.session_state[kljuc] = sorted(set(st.session_state.get(kljuc, [])) | {d.isoformat()})
+        st.rerun()
+    rucni = st.session_state.get(kljuc, [])
+    if rucni:
+        st.caption("Ručno dodano: " + ", ".join(u_datum(x).strftime("%d.%m.") for x in rucni if u_datum(x)))
+        st.caption("Već spremljeni dolasci ostaju u bazi i kad maknem stupac.")
+        if st.button("↩️ Makni ručno dodane stupce", key=f"{key_prefix}_dod_x_{gid}"):
+            st.session_state.pop(kljuc, None)
             st.rerun()
 
 
