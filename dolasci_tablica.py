@@ -38,6 +38,13 @@ IZ_OZNAKE["—"] = ""            # prazna ćelija
 OPCIJE_CELIJE = ["", "\u2705", "\U0001F4BB", "\u274C"]
 OPCIJE_GOSTA = ["", "\u2705", "\U0001F4BB"]
 STATUS_IZ_BROJA = {"1": "u", "2": "o", "0": "x"}
+# 19.11.2026.: tab Dolasci čuva status kao BROJKU ("1" prisutan / "2" online / "0" odsutan) — tako ga
+# čita i STATUS_IZ_BROJA gore, i statistika/obračun u pipeline_upisi. Tablica interno radi sa slovima
+# u/o/x, pa se pri SPREMANJU mora prevesti natrag u brojku. Dok se to nije radilo, svaki zapis spremljen
+# kroz „💾 Spremi izmjene” upisao bi se u Sheet kao slovo i nestao iz svakog prikaza i obračuna.
+BROJ_IZ_SLOVA = {"u": "1", "o": "2", "x": "0"}
+IZ_OZNAKE_BROJ = {ikona: BROJ_IZ_SLOVA[slovo] for slovo, ikona in OZNAKE.items()}
+IZ_OZNAKE_BROJ["—"] = ""       # prazna ćelija
 
 
 def u_datum(v):
@@ -210,8 +217,8 @@ def izmjene_bloka(izvorno: pd.DataFrame, izmijenjeno: pd.DataFrame, grupa_id: st
                 "datum": next(d for d in datumi if kratki(d) == kol),
                 "ucenik_id": str(uid),
                 "ime": str(izmijenjeno.at[uid, "Učenik"]),
-                "status": IZ_OZNAKE.get(novo, ""),
-                "staro": IZ_OZNAKE.get(staro, ""),
+                "status": IZ_OZNAKE_BROJ.get(novo, ""),
+                "staro": IZ_OZNAKE_BROJ.get(staro, ""),
                 "gost": uid in gosti_info,
                 "maticna": gosti_info.get(uid, ""),
             })
@@ -397,7 +404,7 @@ def prikazi_grupu(st, sheet, kanta, d_matura, danas, razdoblja=None, praznici=No
         rez = primijeni_izmjene(sheet, izmjene, [kanta], nast)
         if rez["greske"]:
             st.error("❌ " + " · ".join(rez["greske"]))
-        elif rez["brisano"] or rez["spremljeno"]:
+        elif rez["obrisano"] or rez["spremljeno"]:
             st.success(f"✅ Spremljeno: {rez['spremljeno']} zapisa.")
             st.cache_data.clear()
             st.rerun()
